@@ -9,7 +9,7 @@
 
 paths:
   # output_dir: the parent, shared space for this project where results will go
-  output_dir: /scratch/lab_bock/shared/projects/epitheliomics
+  output_dir: /scratch/lab_bock/shared/projects/cll-ibrutinib
   # results and submission subdirs are subdirectors directories under parent output_dir
   # results: where output sample folders will go
   # submission: where cluster submit scripts and log files will go
@@ -23,7 +23,8 @@ metadata:
   # Relative paths are considered relative to this project config file.
   # Typically, this project config file is stored with the project metadata
   # sample_annotation: one-row-per-sample metadata
-  sample_annotation: /scratch/lab_bock/shared/projects/epitheliomics/metadata/annotation.csv
+  sample_annotation: /scratch/lab_bock/shared/projects/cll-ibrutinib/metadata/annotation.csv
+  merge_table: /scratch/lab_bock/shared/projects/cll-ibrutinib/metadata/merge_table.csv
 
 data_sources:
   # specify the ABSOLUTE PATH of input files using variable path expressions
@@ -56,9 +57,9 @@ compute:
   #submission_command: sh
 
 trackhubs:
-  trackhub_dir: /data/groups/lab_bock/public_html/arendeiro/epitheliomics/
+  trackhub_dir: /data/groups/lab_bock/public_html/arendeiro/cll-ibrutinib/
   # url: if you include this, the make_trackhubs will produce a link to your track hub in the project folder.
-  url: http://biomedical-sequencing.at/bocklab/arendeiro/epitheliomics
+  url: http://biomedical-sequencing.at/bocklab/arendeiro/cll-ibrutinib
 
 username: arendeiro
 email: arendeiro@cemm.oeaw.ac.at
