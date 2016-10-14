@@ -30,6 +30,8 @@ sns.set_palette(sns.color_palette("colorblind"))
 matplotlib.rcParams["svg.fonttype"] = "none"
 matplotlib.rc('text', usetex=False)
 
+sys.setdefaultencoding('utf8')
+
 
 def pickle_me(function):
     """
@@ -46,9 +48,9 @@ class Analysis(object):
     Class to hold functions and data from analysis.
     """
 
-    def __init__(self, data_dir, plots_dir, samples, pickle_file):
+    def __init__(self, data_dir, results_dir, samples, pickle_file):
         self.data_dir = data_dir
-        self.plots_dir = plots_dir
+        self.results_dir = results_dir
         self.samples = samples
         self.pickle_file = pickle_file
 
@@ -82,10 +84,37 @@ class Analysis(object):
         # remove blacklist regions
         blacklist = pybedtools.BedTool(os.path.join(self.data_dir, "external", "wgEncodeDacMapabilityConsensusExcludable.bed"))
         # remove chrM peaks and save
-        sites.intersect(v=True, b=blacklist).filter(lambda x: x.chrom != 'chrM').saveas(os.path.join(self.data_dir, "cll-ibrutinib_peaks.bed"))
+        sites.intersect(v=True, b=blacklist).filter(lambda x: x.chrom != 'chrM').saveas(os.path.join(self.results_dir, "cll-ibrutinib_peaks.bed"))
 
         # Read up again
-        self.sites = pybedtools.BedTool(os.path.join(self.data_dir, "cll-ibrutinib_peaks.bed"))
+        self.sites = pybedtools.BedTool(os.path.join(self.results_dir, "cll-ibrutinib_peaks.bed"))
+
+    @pickle_me
+    def calculate_peak_support(self, samples):
+        # calculate support (number of samples overlaping each merged peak)
+        for i, sample in enumerate(samples):
+            print(sample.name)
+            if i == 0:
+                support = self.sites.intersect(sample.peaks, wa=True, c=True)
+            else:
+                support = support.intersect(sample.peaks, wa=True, c=True)
+            print(support.head())
+        support = support.to_dataframe()
+        # support = support.reset_index()
+        support.columns = ["chrom", "start", "end"] + [sample.name for sample in samples]
+        support.to_csv(os.path.join(self.results_dir, "cll-ibrutinib_peaks.binary_overlap_support.csv"), index=False)
+
+        # get % of total consensus regions found per sample
+        m = pd.melt(support, ["chrom", "start", "end"], var_name="sample_name")
+        # groupby
+        n = m.groupby("sample_name").apply(lambda x: len(x[x["value"] == 1]))
+
+        # divide sum (of unique overlaps) by total to get support value between 0 and 1
+        support["support"] = support[range(len(samples))].apply(lambda x: sum([i if i <= 1 else 1 for i in x]) / float(len(self.samples)), axis=1)
+        # save
+        support.to_csv(os.path.join(self.results_dir, "cll-ibrutinib_peaks.support.csv"), index=False)
+
+        self.support = support
 
     @pickle_me
     def measure_coverage(self, samples):
@@ -121,7 +150,7 @@ class Analysis(object):
         self.coverage["end"] = [int(x[2]) for x in ints]
 
         # save to disk
-        self.coverage.to_csv(os.path.join(self.data_dir, "cll-ibrutinib_peaks.raw_coverage.tsv"), sep="\t", index=True)
+        self.coverage.to_csv(os.path.join(self.results_dir, "cll-ibrutinib_peaks.raw_coverage.tsv"), sep="\t", index=True)
 
     @pickle_me
     def normalize_coverage_quantiles(self, samples):
@@ -136,7 +165,7 @@ class Analysis(object):
         self.coverage_qnorm = np.log2(1 + self.coverage_qnorm)
 
         self.coverage_qnorm = self.coverage_qnorm.join(self.coverage[['chrom', 'start', 'end']])
-        self.coverage_qnorm.to_csv(os.path.join(self.data_dir, "cll-ibrutinib_peaks.coverage_qnorm.log2.tsv"), sep="\t", index=True)
+        self.coverage_qnorm.to_csv(os.path.join(self.results_dir, "cll-ibrutinib_peaks.coverage_qnorm.log2.tsv"), sep="\t", index=True)
 
     def get_peak_gene_annotation(self):
         """
@@ -162,11 +191,11 @@ class Analysis(object):
         self.gene_annotation = gene_annotation.groupby(['chrom', 'start', 'end']).aggregate(lambda x: ",".join(set([str(i) for i in x]))).reset_index()
 
         # save to disk
-        self.gene_annotation.to_csv(os.path.join(self.data_dir, "cll-ibrutinib_peaks.gene_annotation.csv"), index=False)
+        self.gene_annotation.to_csv(os.path.join(self.results_dir, "cll-ibrutinib_peaks.gene_annotation.csv"), index=False)
 
         # save distances to all TSSs (for plotting)
         self.closest_tss_distances = closest['distance'].tolist()
-        pickle.dump(self.closest_tss_distances, open(os.path.join(self.data_dir, "cll-ibrutinib_peaks.closest_tss_distances.pickle"), 'wb'))
+        pickle.dump(self.closest_tss_distances, open(os.path.join(self.results_dir, "cll-ibrutinib_peaks.closest_tss_distances.pickle"), 'wb'))
 
     def get_peak_genomic_location(self):
         """
@@ -211,8 +240,8 @@ class Analysis(object):
         self.region_annotation_b = region_annotation_b.groupby(['chrom', 'start', 'end']).aggregate(lambda x: ",".join(set([str(i) for i in x]))).reset_index()
 
         # save to disk
-        self.region_annotation.to_csv(os.path.join(self.data_dir, "cll-ibrutinib_peaks.region_annotation.csv"), index=False)
-        self.region_annotation_b.to_csv(os.path.join(self.data_dir, "cll-ibrutinib_peaks.region_annotation_background.csv"), index=False)
+        self.region_annotation.to_csv(os.path.join(self.results_dir, "cll-ibrutinib_peaks.region_annotation.csv"), index=False)
+        self.region_annotation_b.to_csv(os.path.join(self.results_dir, "cll-ibrutinib_peaks.region_annotation_background.csv"), index=False)
 
     def get_peak_chromatin_state(self):
         """
@@ -239,8 +268,8 @@ class Analysis(object):
         self.chrom_state_annotation_b.columns = ['chrom', 'start', 'end', 'chromatin_state']
 
         # save to disk
-        self.chrom_state_annotation.to_csv(os.path.join(self.data_dir, "cll-ibrutinib_peaks.chromatin_state.csv"), index=False)
-        self.chrom_state_annotation_b.to_csv(os.path.join(self.data_dir, "cll-ibrutinib_peaks.chromatin_state_background.csv"), index=False)
+        self.chrom_state_annotation.to_csv(os.path.join(self.results_dir, "cll-ibrutinib_peaks.chromatin_state.csv"), index=False)
+        self.chrom_state_annotation_b.to_csv(os.path.join(self.results_dir, "cll-ibrutinib_peaks.chromatin_state_background.csv"), index=False)
 
     @pickle_me
     def annotate(self, samples):
@@ -256,6 +285,11 @@ class Analysis(object):
         self.coverage_qnorm_annotated = pd.merge(
             self.coverage_qnorm_annotated,
             self.chrom_state_annotation[['chrom', 'start', 'end', 'chromatin_state']], on=['chrom', 'start', 'end'], how="left")
+
+        # add support
+        self.coverage_qnorm_annotated = pd.merge(
+            self.coverage_qnorm_annotated,
+            self.support[['chrom', 'start', 'end', 'support']], on=['chrom', 'start', 'end'], how="left")
 
         # calculate mean coverage
         self.coverage_qnorm_annotated['mean'] = self.coverage_qnorm_annotated[[sample.name for sample in samples]].mean(axis=1)
@@ -279,7 +313,7 @@ class Analysis(object):
         self.coverage_qnorm_annotated.index = self.coverage.index
 
         # Save
-        self.coverage_qnorm_annotated.to_csv(os.path.join(self.data_dir, "cll-ibrutinib_peaks.coverage_qnorm.log2.annotated.tsv"), sep="\t", index=True)
+        self.coverage_qnorm_annotated.to_csv(os.path.join(self.results_dir, "cll-ibrutinib_peaks.coverage_qnorm.log2.annotated.tsv"), sep="\t", index=True)
 
     def plot_peak_characteristics(self):
         # Loop at summary statistics:
@@ -289,7 +323,17 @@ class Analysis(object):
         axis.set_xlim(0, 2000)  # cut it at 2kb
         axis.set_xlabel("peak width (bp)")
         axis.set_ylabel("frequency")
-        fig.savefig(os.path.join(self.plots_dir, "cll-ibrutinib_peaks.lengths.svg"), bbox_inches="tight")
+        sns.despine(fig)
+        fig.savefig(os.path.join(self.results_dir, "cll-ibrutinib.lengths.svg"), bbox_inches="tight")
+        plt.close("all")
+
+        # plot support
+        fig, axis = plt.subplots()
+        sns.distplot(self.support["support"], bins=40, ax=axis)
+        axis.set_ylabel("frequency")
+        sns.despine(fig)
+        fig.savefig(os.path.join(self.results_dir, "cll-ibrutinib.support.svg"), bbox_inches="tight")
+        plt.close("all")
 
         # Plot distance to nearest TSS
         fig, axis = plt.subplots()
@@ -297,7 +341,9 @@ class Analysis(object):
         axis.set_xlim(0, 100000)  # cut it at 100kb
         axis.set_xlabel("distance to nearest TSS (bp)")
         axis.set_ylabel("frequency")
-        fig.savefig(os.path.join(self.plots_dir, "cll-ibrutinib_peaks.tss_distance.svg"), bbox_inches="tight")
+        sns.despine(fig)
+        fig.savefig(os.path.join(self.results_dir, "cll-ibrutinib.tss_distance.svg"), bbox_inches="tight")
+        plt.close("all")
 
         # Plot genomic regions
         # these are just long lists with genomic regions
@@ -317,7 +363,7 @@ class Analysis(object):
         fig, axis = plt.subplots(3, sharex=True, sharey=False)
         sns.barplot(x=0, y=1, data=data, ax=axis[0])
         sns.barplot(x=0, y=1, data=background, ax=axis[1])
-        sns.barplot(x=0, y=1, data=pd.DataFrame([data[0], (data[1] / background[1])]).T, ax=axis[2])
+        sns.barplot(x=0, y=1, data=pd.DataFrame([data[0], np.log2((data[1] / background[1]).astype(float))]).T, ax=axis[2])
         axis[0].set_title("ATAC-seq peaks")
         axis[1].set_title("genome background")
         axis[2].set_title("peaks over background")
@@ -328,9 +374,11 @@ class Analysis(object):
         axis[2].set_ylabel("fold-change")
         fig.autofmt_xdate()
         fig.tight_layout()
-        fig.savefig(os.path.join(self.plots_dir, "cll-ibrutinib_peaks.genomic_regions.svg"), bbox_inches="tight")
+        sns.despine(fig)
+        fig.savefig(os.path.join(self.results_dir, "cll-ibrutinib.genomic_regions.svg"), bbox_inches="tight")
+        plt.close("all")
 
-        # Plot chromatin states
+        # # Plot chromatin states
         # get long list of chromatin states (for plotting)
         all_chrom_state_annotation = [item for sublist in self.chrom_state_annotation['chromatin_state'].apply(lambda x: x.split(",")) for item in sublist]
         all_chrom_state_annotation_b = [item for sublist in self.chrom_state_annotation_b['chromatin_state'].apply(lambda x: x.split(",")) for item in sublist]
@@ -347,7 +395,7 @@ class Analysis(object):
         fig, axis = plt.subplots(3, sharex=True, sharey=False)
         sns.barplot(x=0, y=1, data=data, ax=axis[0])
         sns.barplot(x=0, y=1, data=background, ax=axis[1])
-        sns.barplot(x=0, y=1, data=pd.DataFrame([data[0], (data[1] / background[1])]).T, ax=axis[2])
+        sns.barplot(x=0, y=1, data=pd.DataFrame([data[0], np.log2((data[1] / background[1]).astype(float))]).T, ax=axis[2])
         axis[0].set_title("ATAC-seq peaks")
         axis[1].set_title("genome background")
         axis[2].set_title("peaks over background")
@@ -358,114 +406,190 @@ class Analysis(object):
         axis[2].set_ylabel("fold-change")
         fig.autofmt_xdate()
         fig.tight_layout()
-        fig.savefig(os.path.join(self.plots_dir, "cll-ibrutinib_peaks.chromatin_states.svg"), bbox_inches="tight")
+        sns.despine(fig)
+        fig.savefig(os.path.join(self.results_dir, "cll-ibrutinib.chromatin_states.svg"), bbox_inches="tight")
 
         # distribution of count attributes
         data = self.coverage_qnorm_annotated.copy()
 
-        sns.distplot(data["mean"], rug=False)
-        plt.savefig(os.path.join(self.plots_dir, "cll-ibrutinib_peaks.mean.distplot.svg"), bbox_inches="tight")
-        plt.close()
+        fig, axis = plt.subplots(1)
+        sns.distplot(data["mean"], rug=False, ax=axis)
+        sns.despine(fig)
+        fig.savefig(os.path.join(self.results_dir, "cll-ibrutinib.mean.distplot.svg"), bbox_inches="tight")
 
-        sns.distplot(data["qv2"], rug=False)
-        plt.savefig(os.path.join(self.plots_dir, "cll-ibrutinib_peaks.qv2.distplot.svg"), bbox_inches="tight")
-        plt.close()
+        fig, axis = plt.subplots(1)
+        sns.distplot(data["qv2"], rug=False, ax=axis)
+        sns.despine(fig)
+        fig.savefig(os.path.join(self.results_dir, "cll-ibrutinib.qv2.distplot.svg"), bbox_inches="tight")
 
-        sns.distplot(data["dispersion"], rug=False)
-        plt.savefig(os.path.join(self.plots_dir, "cll-ibrutinib_peaks.dispersion.distplot.svg"), bbox_inches="tight")
-        plt.close()
+        fig, axis = plt.subplots(1)
+        sns.distplot(data["dispersion"], rug=False, ax=axis)
+        sns.despine(fig)
+        fig.savefig(os.path.join(self.results_dir, "cll-ibrutinib.dispersion.distplot.svg"), bbox_inches="tight")
+
+        # this is loaded now
+        df = pd.read_csv(os.path.join(self.data_dir, "cll-ibrutinib_peaks.support.csv"))
+        fig, axis = plt.subplots(1)
+        sns.distplot(df["support"], rug=False, ax=axis)
+        sns.despine(fig)
+        fig.savefig(os.path.join(self.results_dir, "cll-ibrutinib.support.distplot.svg"), bbox_inches="tight")
+
+        plt.close("all")
 
     def plot_coverage(self):
         data = self.coverage_qnorm_annotated.copy()
         # (rewrite to avoid putting them there in the first place)
-        for variable in ['gene_name', 'genomic_region', 'chromatin_state']:
+        variables = ['gene_name', 'genomic_region', 'chromatin_state']
+
+        for variable in variables:
             d = data[variable].str.split(',').apply(pd.Series).stack()  # separate comma-delimited fields
             d.index = d.index.droplevel(1)  # returned a multiindex Series, so get rid of second index level (first is from original row)
             data = data.drop([variable], axis=1)  # drop original column so there are no conflicts
             d.name = variable
             data = data.join(d)  # joins on index
 
+        variables = [
+            'chrom', 'start', 'end',
+            'ensembl_transcript_id', 'distance', 'ensembl_gene_id', 'support',
+            'mean', 'variance', 'std_deviation', 'dispersion', 'qv2',
+            'amplitude', 'gene_name', 'genomic_region', 'chromatin_state']
         # Plot
         data_melted = pd.melt(
             data,
-            id_vars=["chrom", "start", "end", 'mean', 'dispersion', 'qv2',
-                     'gene_name', 'genomic_region', 'chromatin_state'], var_name="sample", value_name="norm_counts")
+            id_vars=variables, var_name="sample", value_name="norm_counts")
+
+        # transform dispersion
+        data_melted['dispersion'] = np.log2(1 + data_melted['dispersion'])
 
         # Together in same violin plot
-        sns.violinplot("genomic_region", "norm_counts", data=data_melted)
-        plt.savefig(os.path.join(self.plots_dir, "norm_counts.per_genomic_region.violinplot.svg"), bbox_inches="tight")
-        plt.close()
-        sns.violinplot("genomic_region", "norm_counts", data=data_melted)
-        plt.savefig(os.path.join(self.plots_dir, "norm_counts.chromatin_state.violinplot.svg"), bbox_inches="tight")
-        plt.close()
+        fig, axis = plt.subplots(1)
+        sns.violinplot("genomic_region", "norm_counts", data=data_melted, ax=axis)
+        fig.savefig(os.path.join(self.results_dir, "norm_counts.per_genomic_region.violinplot.png"), bbox_inches="tight", dpi=300)
+
         # dispersion
-        sns.violinplot("genomic_region", "dispersion", data=data_melted)
-        plt.savefig(os.path.join(self.plots_dir, "norm_counts.dispersion.per_genomic_region.violinplot.svg"), bbox_inches="tight")
-        plt.close()
-        sns.violinplot("genomic_region", "dispersion", data=data_melted)
-        plt.savefig(os.path.join(self.plots_dir, "norm_counts.dispersion.chromatin_state.violinplot.svg"), bbox_inches="tight")
-        plt.close()
+        fig, axis = plt.subplots(1)
+        sns.violinplot("genomic_region", "dispersion", data=data_melted, ax=axis)
+        fig.savefig(os.path.join(self.results_dir, "norm_counts.dispersion.per_genomic_region.violinplot.png"), bbox_inches="tight", dpi=300)
+
         # dispersion
-        sns.violinplot("genomic_region", "dispersion", data=data_melted)
-        plt.savefig(os.path.join(self.plots_dir, "norm_counts.dispersion.per_genomic_region.violinplot.svg"), bbox_inches="tight")
-        plt.close()
-        sns.violinplot("genomic_region", "dispersion", data=data_melted)
-        plt.savefig(os.path.join(self.plots_dir, "norm_counts.dispersion.chromatin_state.violinplot.svg"), bbox_inches="tight")
-        plt.close()
+        fig, axis = plt.subplots(1)
+        sns.violinplot("genomic_region", "qv2", data=data_melted, ax=axis)
+        fig.savefig(os.path.join(self.results_dir, "norm_counts.qv2.per_genomic_region.violinplot.png"), bbox_inches="tight", dpi=300)
+
+        fig, axis = plt.subplots(1)
+        sns.violinplot("chromatin_state", "norm_counts", data=data_melted, ax=axis)
+        fig.savefig(os.path.join(self.results_dir, "norm_counts.chromatin_state.violinplot.png"), bbox_inches="tight", dpi=300)
+
+        fig, axis = plt.subplots(1)
+        sns.violinplot("chromatin_state", "dispersion", data=data_melted, ax=axis)
+        fig.savefig(os.path.join(self.results_dir, "norm_counts.dispersion.chromatin_state.violinplot.png"), bbox_inches="tight", dpi=300)
+
+        fig, axis = plt.subplots(1)
+        sns.violinplot("chromatin_state", "qv2", data=data_melted, ax=axis)
+        fig.savefig(os.path.join(self.results_dir, "norm_counts.qv2.chromatin_state.violinplot.png"), bbox_inches="tight", dpi=300)
 
         # separated by variable in one grid
         g = sns.FacetGrid(data_melted, col="genomic_region", col_wrap=3)
         g.map(sns.distplot, "mean", hist=False, rug=False)
-        plt.savefig(os.path.join(self.plots_dir, "norm_counts.mean.per_genomic_region.distplot.svg"), bbox_inches="tight")
-        plt.close()
-
-        g = sns.FacetGrid(data_melted, col="chromatin_state", col_wrap=3)
-        g.map(sns.distplot, "mean", hist=False, rug=False)
-        plt.savefig(os.path.join(self.plots_dir, "norm_counts.mean.chromatin_state.distplot.svg"), bbox_inches="tight")
-        plt.close()
+        g.fig.savefig(os.path.join(self.results_dir, "norm_counts.mean.per_genomic_region.distplot.png"), bbox_inches="tight", dpi=300)
 
         g = sns.FacetGrid(data_melted, col="genomic_region", col_wrap=3)
         g.map(sns.distplot, "dispersion", hist=False, rug=False)
-        plt.savefig(os.path.join(self.plots_dir, "norm_counts.dispersion.per_genomic_region.distplot.svg"), bbox_inches="tight")
-        plt.close()
+        g.fig.savefig(os.path.join(self.results_dir, "norm_counts.dispersion.per_genomic_region.distplot.png"), bbox_inches="tight", dpi=300)
+
+        g = sns.FacetGrid(data_melted, col="genomic_region", col_wrap=3)
+        g.map(sns.distplot, "qv2", hist=False, rug=False)
+        g.fig.savefig(os.path.join(self.results_dir, "norm_counts.qv2.per_genomic_region.distplot.png"), bbox_inches="tight", dpi=300)
+
+        g = sns.FacetGrid(data_melted, col="genomic_region", col_wrap=3)
+        g.map(sns.distplot, "support", hist=False, rug=False)
+        g.fig.savefig(os.path.join(self.results_dir, "norm_counts.support.per_genomic_region.distplot.png"), bbox_inches="tight", dpi=300)
+
+        g = sns.FacetGrid(data_melted, col="chromatin_state", col_wrap=3)
+        g.map(sns.distplot, "mean", hist=False, rug=False)
+        g.fig.savefig(os.path.join(self.results_dir, "norm_counts.mean.chromatin_state.distplot.png"), bbox_inches="tight", dpi=300)
 
         g = sns.FacetGrid(data_melted, col="chromatin_state", col_wrap=3)
         g.map(sns.distplot, "dispersion", hist=False, rug=False)
-        plt.savefig(os.path.join(self.plots_dir, "norm_counts.dispersion.chromatin_state.distplot.svg"), bbox_inches="tight")
-        plt.close()
+        g.fig.savefig(os.path.join(self.results_dir, "norm_counts.dispersion.chromatin_state.distplot.png"), bbox_inches="tight", dpi=300)
 
-    def plot_variance(self):
-        sns.jointplot('mean', "dispersion", data=self.coverage_qnorm_annotated, kind="kde")
-        plt.savefig(os.path.join(self.plots_dir, "norm_counts_per_sample.dispersion.svg"), bbox_inches="tight")
+        g = sns.FacetGrid(data_melted, col="chromatin_state", col_wrap=3)
+        g.map(sns.distplot, "qv2", hist=False, rug=False)
+        g.fig.savefig(os.path.join(self.results_dir, "norm_counts.qv2.chromatin_state.distplot.png"), bbox_inches="tight", dpi=300)
+
+        g = sns.FacetGrid(data_melted, col="chromatin_state", col_wrap=3)
+        g.map(sns.distplot, "support", hist=False, rug=False)
+        g.fig.savefig(os.path.join(self.results_dir, "norm_counts.support.chromatin_state.distplot.png"), bbox_inches="tight", dpi=300)
         plt.close("all")
 
-        sns.jointplot('mean', "qv2", data=self.coverage_qnorm_annotated)
-        plt.savefig(os.path.join(self.plots_dir, "norm_counts_per_sample.qv2_vs_mean.svg"), bbox_inches="tight")
-        plt.close("all")
+    def plot_variance(self, samples):
+
+        g = sns.jointplot('mean', "dispersion", data=self.coverage_qnorm_annotated, kind="kde")
+        g.fig.savefig(os.path.join(self.results_dir, "norm_counts_per_sample.dispersion.png"), bbox_inches="tight", dpi=300)
+
+        g = sns.jointplot('mean', "qv2", data=self.coverage_qnorm_annotated)
+        g.fig.savefig(os.path.join(self.results_dir, "norm_counts_per_sample.qv2_vs_mean.png"), bbox_inches="tight", dpi=300)
+
+        g = sns.jointplot('support', "qv2", data=self.coverage_qnorm_annotated)
+        g.fig.savefig(os.path.join(self.results_dir, "norm_counts_per_sample.support_vs_qv2.png"), bbox_inches="tight", dpi=300)
 
         # Filter out regions which the maximum across all samples is below a treshold
-        filtered = self.coverage_qnorm_annotated[self.coverage_qnorm_annotated[[sample.name for sample in self.samples]].apply(max, axis=1) > 3]
+        filtered = self.coverage_qnorm_annotated[self.coverage_qnorm_annotated[[sample.name for sample in samples]].max(axis=1) > 3]
 
         sns.jointplot('mean', "dispersion", data=filtered)
-        plt.savefig(os.path.join(self.plots_dir, "norm_counts_per_sample.dispersion.filtered.svg"), bbox_inches="tight")
-        plt.close("all")
+        plt.savefig(os.path.join(self.results_dir, "norm_counts_per_sample.dispersion.filtered.png"), bbox_inches="tight", dpi=300)
+        plt.close('all')
         sns.jointplot('mean', "qv2", data=filtered)
-        plt.savefig(os.path.join(self.plots_dir, "norm_counts_per_sample.mean_vs_qv2.filtered.svg"), bbox_inches="tight")
+        plt.savefig(os.path.join(self.results_dir, "norm_counts_per_sample.support_vs_qv2.filtered.png"), bbox_inches="tight", dpi=300)
 
     def plot_sample_correlations(self):
         pass
 
     def unsupervised(self, samples):
         """
-        Run trait classification (with independent validation if possible for that trait)
-        on all samples with known annotation of the trait.
         """
         from sklearn.decomposition import PCA
         from sklearn.manifold import MDS
+        import matplotlib.patches as mpatches
+
+        traits = ["patient_id", "timepoint_name", "treatment_response.1", "gender", "ighv_mutation_status", "CD38_positive", "diagnosis_stage_rai", "atac_seq_batch"]
+        pallete = sns.color_palette("colorblind") + sns.color_palette("Set2", 10) + sns.color_palette("Set2")[::-1]
 
         # Approach 1: all regions
         X = self.coverage_qnorm_annotated[[s.name for s in samples]]
 
+        # Pairwise correlations
+        g = sns.clustermap(X.corr(), xticklabels=False, annot=True)
+        for item in g.ax_heatmap.get_yticklabels():
+            item.set_rotation(0)
+        g.fig.savefig(os.path.join(self.results_dir, "cll-ibrutinib_peaks.all_sites.corr.clustermap.svg"), bbox_inches='tight')
+
+        # MDS
+        mds = MDS(n_jobs=-1)
+        x_new = mds.fit_transform(X.T)
+        # transform again
+        x = pd.DataFrame(x_new)
+        xx = x.apply(lambda j: (j - j.mean()) / j.std(), axis=0)
+
+        fig, axis = plt.subplots(1, len(traits), figsize=(4 * len(traits), 4))
+        axis = axis.flatten()
+        for i, trait in enumerate(traits):
+            # make unique dict
+            color_dict = dict(zip(list(set([getattr(s, trait) for s in samples])), pallete))
+            colors = [color_dict[getattr(s, trait)] for s in samples]
+
+            for j in range(xx.shape[0]):
+                axis[i].scatter(xx.ix[j][0], xx.ix[j][1], s=50, color=colors[j], label=getattr(samples[j], trait))
+            axis[i].set_title(traits[i])
+            axis[i].legend(
+                handles=[mpatches.Patch(color=v, label=k) for k, v in color_dict.items()],
+                ncol=1,
+                loc='center left',
+                bbox_to_anchor=(1, 0.5))
+
+        fig.savefig(os.path.join(self.results_dir, "cll-ibrutinib_peaks.all_sites.mds.svg"), bbox_inches="tight")
+
+        # PCA
         pca = PCA()
         x_new = pca.fit_transform(X.T)
         # transform again
@@ -479,42 +603,35 @@ class Analysis(object):
             (pca.explained_variance_ / pca.explained_variance_.sum()) * 100, 'o-')  # % of total variance
         axis.set_xlabel("PC")
         axis.set_ylabel("% variance")
-        fig.savefig(os.path.join(self.plots_dir, "cll_peaks.all_sites.pca.explained_variance.svg"), bbox_inches='tight')
+        sns.despine(fig)
+        fig.savefig(os.path.join(self.results_dir, "cll-ibrutinib_peaks.all_sites.pca.explained_variance.svg"), bbox_inches='tight')
 
-        # plot PCA
-        # with samples colored for all traits
-        # sample_colors = samples_to_color(samples, "patient")
-        sample_symbols = samples_to_symbol(samples, "unique")
+        # plot
+        fig, axis = plt.subplots(min(xx.shape[0] - 1, 10), len(traits), figsize=(4 * len(traits), 4 * min(xx.shape[0] - 1, 10)))
+        for pc in range(min(xx.shape[0] - 1, 10)):
+            for i, trait in enumerate(traits):
+                # make unique dict
+                color_dict = dict(zip(list(set([getattr(s, trait) for s in samples])), pallete))
+                colors = [color_dict[getattr(s, trait)] for s in samples]
 
-        traits = [
-            "patient", "gender", "disease", "IGHV", "ighv_homology", "under_treatment", "ibrutinib_treatment", "timepoint_name", "batch"]
-
-        all_colors = list()
-        for trait in traits:
-            all_colors.append(samples_to_color(samples, trait))
-
-        for pc in range(xx.shape[0] - 1):
-            fig, axis = plt.subplots(2, len(traits) / 2, figsize=(15, 8))
-            axis = axis.flatten()
-            for i in range(len(traits)):
                 for j in range(len(xx)):
-                    axis[i].scatter(xx.ix[j][pc], xx.ix[j][pc + 1], s=50, color=all_colors[i][j], marker=sample_symbols[j])
-                axis[i].set_title(traits[i])
-            fig.savefig(os.path.join(self.plots_dir, "cll_peaks.all_sites.pca.pc%i_vs_pc%i.svg" % (pc + 1, pc + 2)), bbox_inches="tight")
+                    axis[pc][i].scatter(xx.ix[j][pc], xx.ix[j][pc + 1], s=50, color=colors[j], label=getattr(samples[j], trait))
+                axis[pc][i].set_title(traits[i])
+                axis[pc][i].set_xlabel("PC {}".format(pc + 1))
+                axis[pc][i].set_ylabel("PC {}".format(pc + 2))
+                axis[pc][i].legend(
+                    handles=[mpatches.Patch(color=v, label=k) for k, v in color_dict.items()],
+                    ncol=1,
+                    loc='center left',
+                    bbox_to_anchor=(1, 0.5))
+        fig.savefig(os.path.join(self.results_dir, "cll-ibrutinib_peaks.all_sites.pca.svg"), bbox_inches="tight")
 
-        # Test association of PCs with variables
-        import re
+        #
+
+        # # Test association of PCs with variables
         import itertools
         from scipy.stats import kruskal
-        # from scipy.stats import wilcoxon
         from scipy.stats import pearsonr
-
-        traits = [
-            "patient_id", "gender", "IGHV", "ighv_homology", "CD38_positive",
-            "under_treatment", "ibrutinib_treatment", "timepoint_name", "batch", "diagnosis_stage_rai"]
-
-        for s in samples:
-            s.batch = re.sub(r"(ATAC\d+)[s-].*", r"\1", s.experiment_name)
 
         associations = list()
         for pc in range(xx.shape[0]):
@@ -561,7 +678,7 @@ class Analysis(object):
         associations = pd.DataFrame(associations, columns=["pc", "trait", "variable_type", "group_1", "group_2", "p_value"])
 
         # write
-        associations.to_csv(os.path.join(self.data_dir, "pca.variable_principle_components_association.csv"), index=False)
+        associations.to_csv(os.path.join(self.results_dir, "cll-ibrutinib_peaks.pca.variable_principle_components_association.csv"), index=False)
 
         # Plot
         # associations[associations['p_value'] < 0.05].drop(['group_1', 'group_2'], axis=1).drop_duplicates()
@@ -570,31 +687,36 @@ class Analysis(object):
 
         # heatmap of -log p-values
         sns.clustermap(-np.log10(pivot), row_cluster=False, annot=True)
-        plt.savefig(os.path.join(self.plots_dir, "pca.variable_principle_components_association.svg"), bbox_inches="tight")
+        plt.savefig(os.path.join(self.results_dir, "cll-ibrutinib_peaks.pca.variable_principle_components_association.svg"), bbox_inches="tight")
 
         # heatmap of masked significant
         sns.clustermap((pivot < 0.05).astype(int), row_cluster=False)
-        plt.savefig(os.path.join(self.plots_dir, "pca.variable_principle_components_association.masked.svg"), bbox_inches="tight")
+        plt.savefig(os.path.join(self.results_dir, "cll-ibrutinib_peaks.pca.variable_principle_components_association.masked.svg"), bbox_inches="tight")
+
         sns.clustermap((pivot < 0.05).astype(int).drop(["patient_id", "batch", "diagnosis_stage_rai"], axis=1), row_cluster=False)
-        plt.savefig(os.path.join(self.plots_dir, "pca.variable_principle_components_association.masked.filtered.svg"), bbox_inches="tight")
+        plt.savefig(os.path.join(self.results_dir, "cll-ibrutinib_peaks.pca.variable_principle_components_association.masked.filtered.svg"), bbox_inches="tight")
 
-        # MDS
-        traits = [
-            "patient", "gender", "disease", "IGHV", "ighv_homology", "under_treatment", "timepoint_name", "batch"]
+        # plot PCs associated with treatment
+        combs = [(1, 4), (1, 17), (4, 17), (4, 5)]
 
-        mds = MDS(n_jobs=-1)
-        x_new = mds.fit_transform(X.T)
-        # transform again
-        x = pd.DataFrame(x_new)
-        xx = x.apply(lambda j: (j - j.mean()) / j.std(), axis=0)
+        fig, axis = plt.subplots(len(combs), len(traits), figsize=(4 * len(traits), 4 * len(combs)))
+        for z, (pc1, pc2) in enumerate(combs):
+            for i, trait in enumerate(traits):
+                # make unique dict
+                color_dict = dict(zip(list(set([getattr(s, trait) for s in samples])), pallete))
+                colors = [color_dict[getattr(s, trait)] for s in samples]
 
-        fig, axis = plt.subplots(2, len(traits) / 2, figsize=(15, 8))
-        axis = axis.flatten()
-        for i in range(len(traits)):
-            for j in range(len(xx)):
-                axis[i].scatter(xx.ix[j][0], xx.ix[j][1], s=50, color=all_colors[i][j], marker=sample_symbols[j])
-            axis[i].set_title(traits[i])
-        fig.savefig(os.path.join(self.plots_dir, "cll_peaks.all_sites.mds.svg"), bbox_inches="tight")
+                for j in range(len(xx)):
+                    axis[z][i].scatter(xx.ix[j][pc1], xx.ix[j][pc2], s=50, color=colors[j], label=getattr(samples[j], trait))
+                axis[z][i].set_title(traits[i])
+                axis[z][i].set_xlabel("PC {}".format(pc1 + 1))
+                axis[z][i].set_ylabel("PC {}".format(pc2 + 1))
+                axis[z][i].legend(
+                    handles=[mpatches.Patch(color=v, label=k) for k, v in color_dict.items()],
+                    ncol=1,
+                    loc='center left',
+                    bbox_to_anchor=(1, 0.5))
+        fig.savefig(os.path.join(self.results_dir, "cll-ibrutinib_peaks.all_sites.pca.selected_treatment.svg"), bbox_inches="tight")
 
     def pathways(self):
 
@@ -640,50 +762,50 @@ class Analysis(object):
         df = self.coverage_qnorm_annotated
 
         for name, genes in gene_lists.items():
-
             # get regions
             path_regions = df[df["gene_name"].str.contains("|".join(list(set(genes))))][["gene_name"] + [s.name for s in self.samples]]
-
             # reduce per gene
             path_genes = path_regions.groupby(["gene_name"]).mean()
 
-            # g = sns.clustermap(
-            #     path_regions.drop("gene_name", axis=1),
-            #     xticklabels=[" - ".join([s.patient_id, str(getattr(s, "ibrutinib_treatment")), str(getattr(s, "treatment_response"))]) for s in self.samples],
-            #     standard_scale=0,
-            #     figsize=(10, 15))
-            # plt.setp(g.ax_heatmap.xaxis.get_majorticklabels(), rotation=90)
-            # plt.setp(g.ax_heatmap.yaxis.get_majorticklabels(), rotation=0)
-            # g.savefig(os.path.join("clustermap.regions.std0.%s.png" % name), bbox_inches="tight", dpi=300)
-
             g = sns.clustermap(
-                path_genes,
-                xticklabels=[" - ".join([s.patient_id, str(getattr(s, "ibrutinib_treatment")), str(getattr(s, "treatment_response"))]) for s in self.samples],
-                standard_scale=0,
+                path_regions.drop("gene_name", axis=1),
+                xticklabels=[" - ".join([s.patient_id, str(getattr(s, "timepoint_name")), str(getattr(s, "treatment_response.1"))]) for s in self.samples],
+                z_score=0,
                 figsize=(10, 15))
             plt.setp(g.ax_heatmap.xaxis.get_majorticklabels(), rotation=90)
             plt.setp(g.ax_heatmap.yaxis.get_majorticklabels(), rotation=0)
-            g.savefig(os.path.join("clustermap.genes.std0.%s.png" % name), bbox_inches="tight", dpi=300)
-
-            # g = sns.clustermap(
-            #     path_regions.drop("gene_name", axis=1),
-            #     xticklabels=[" - ".join([s.patient_id, str(getattr(s, "ibrutinib_treatment")), str(getattr(s, "treatment_response"))]) for s in self.samples],
-            #     standard_scale=1,
-            #     figsize=(10, 15))
-            # plt.setp(g.ax_heatmap.xaxis.get_majorticklabels(), rotation=90)
-            # plt.setp(g.ax_heatmap.yaxis.get_majorticklabels(), rotation=0)
-            # g.savefig(os.path.join("clustermap.regions.std1.%s.png" % name), bbox_inches="tight", dpi=300)
+            g.savefig(os.path.join(self.results_dir, "gene_lists.regions.%s.regions.png" % name), bbox_inches="tight", dpi=300)
 
             g = sns.clustermap(
                 path_genes,
-                xticklabels=[" - ".join([s.patient_id, str(getattr(s, "ibrutinib_treatment")), str(getattr(s, "treatment_response"))]) for s in self.samples],
-                standard_scale=1,
+                xticklabels=[" - ".join([s.patient_id, str(getattr(s, "timepoint_name")), str(getattr(s, "treatment_response.1"))]) for s in self.samples],
+                z_score=0,
                 figsize=(10, 15))
             plt.setp(g.ax_heatmap.xaxis.get_majorticklabels(), rotation=90)
             plt.setp(g.ax_heatmap.yaxis.get_majorticklabels(), rotation=0)
-            g.savefig(os.path.join("clustermap.genes.std1.%s.png" % name), bbox_inches="tight", dpi=300)
+            g.savefig(os.path.join(self.results_dir, "gene_lists.genes.%s.genes.png" % name), bbox_inches="tight", dpi=300)
 
+        g = sns.clustermap(
+            path_regions.drop("gene_name", axis=1),
+            xticklabels=[" - ".join([s.patient_id, str(getattr(s, "timepoint_name")), str(getattr(s, "treatment_response.1"))]) for s in self.samples],
+            z_score=0,
+            figsize=(10, 15))
+        plt.setp(g.ax_heatmap.xaxis.get_majorticklabels(), rotation=90)
+        plt.setp(g.ax_heatmap.yaxis.get_majorticklabels(), rotation=0)
+        g.savefig(os.path.join(self.results_dir, "gene_lists.regions.all.regions.png"), bbox_inches="tight", dpi=300)
 
+        # get regions
+        path_regions = df[df["gene_name"].str.contains("|".join(list(set(sum(gene_lists.values(), [])))))][["gene_name"] + [s.name for s in self.samples]]
+        # reduce per gene
+        path_genes = path_regions.groupby(["gene_name"]).mean()
+        g = sns.clustermap(
+            path_genes,
+            xticklabels=[" - ".join([s.patient_id, str(getattr(s, "timepoint_name")), str(getattr(s, "treatment_response.1"))]) for s in self.samples],
+            z_score=0,
+            figsize=(10, 15))
+        plt.setp(g.ax_heatmap.xaxis.get_majorticklabels(), rotation=90)
+        plt.setp(g.ax_heatmap.yaxis.get_majorticklabels(), rotation=0)
+        g.savefig(os.path.join(self.results_dir, "gene_lists.genes.all.genes.png"), bbox_inches="tight", dpi=300)
 
     @pickle_me
     def differential_analysis(self, samples, trait):
@@ -702,7 +824,7 @@ class Analysis(object):
         experiment_matrix = pd.DataFrame([sample.as_series() for sample in sel_samples], index=[sample.name for sample in sel_samples])
 
         # Make output dir
-        output_dir = os.path.join(self.plots_dir, "..", "deseq")
+        output_dir = os.path.join(self.results_dir, "..", "deseq")
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
@@ -1312,22 +1434,6 @@ def state_enrichment_overlap(n=100):
     fig.savefig("chrom_state_overlap_all.fraction_total.enriched.log.svg", bbox_inches='tight')
 
 
-def bed_to_fasta(bed_file, fasta_file):
-    # write name column
-    bed = pd.read_csv(bed_file, sep='\t', header=None)
-    bed['name'] = bed[0] + ":" + bed[1].astype(str) + "-" + bed[2].astype(str)
-    bed[1] = bed[1].astype(int)
-    bed[2] = bed[2].astype(int)
-    bed.to_csv(bed_file + ".tmp.bed", sep='\t', header=None, index=False)
-
-    # do enrichment
-    # cmd = "bedtools getfasta -fi ~/resources/genomes/hg19/hg19.fa -bed {0} -fo {1}".format(bed_file + ".tmp.bed", fasta_file)
-    cmd = "twoBitToFa ~/resources/genomes/hg19/hg19.2bit -bed={0} {1}".format(bed_file + ".tmp.bed", fasta_file)
-
-    os.system(cmd)
-    os.system("rm %s" % bed_file + ".tmp.bed")
-
-
 def DESeq_analysis(counts_matrix, experiment_matrix, variable, covariates, output_prefix, alpha=0.05):
     """
     """
@@ -1339,6 +1445,8 @@ def DESeq_analysis(counts_matrix, experiment_matrix, variable, covariates, outpu
         run = function(countData, colData, variable, covariates, output_prefix, alpha) {
             library(DESeq2)
 
+            colData$replicate = as.factor(colData$replicate)
+
             design = as.formula((paste("~", covariates, variable)))
             print(design)
             dds <- DESeqDataSetFromMatrix(
@@ -1346,25 +1454,27 @@ def DESeq_analysis(counts_matrix, experiment_matrix, variable, covariates, outpu
                 design)
 
             dds <- DESeq(dds)
+            save(dds, file=paste0("results/", output_prefix, ".deseq_dds_object.Rdata"))
+            # load("deseq_gene_expresion.deseq_dds_object.Rdata")
 
             # Get group means
             # get groups with one sample and set mean to the value of that sample
-            single_levels = names(table(colData$treatment_response)[table(colData$treatment_response) == 1])
+            single_levels = names(table(colData[, variable])[table(colData[, variable]) == 1])
             single_levels_values = sapply(
                 single_levels,
-                function(lvl) counts(dds, normalized=TRUE)[, dds$treatment_response == lvl]
+                function(lvl) counts(dds, normalized=TRUE)[, dds[, variable] == lvl]
             )
             # all others, get sample means
-            multiple_levels = names(table(colData$treatment_response)[table(colData$treatment_response) > 1])
+            multiple_levels = names(table(colData[, variable])[table(colData[, variable]) > 1])
             multiple_levels_values = sapply(
                 multiple_levels,
-                function(lvl) rowMeans(counts(dds, normalized=TRUE)[, dds$treatment_response == lvl])
+                function(lvl) rowMeans(counts(dds, normalized=TRUE)[, colData[, variable] == lvl])
             )
             group_means = cbind(single_levels_values, multiple_levels_values)
-            write.table(group_means, paste0(output_prefix, ".", variable, ".group_means.csv"), sep=",")
+            write.table(group_means, paste0("results/", output_prefix, ".", variable, ".group_means.csv"), sep=",")
 
             # pairwise combinations
-            combs = combn(unique(colData[, variable]), 2)
+            combs = combn(sort(unique(colData[, variable]), descending=FALSE), 2)
 
             # keep track of output files
             result_files = list()
@@ -1374,6 +1484,7 @@ def DESeq_analysis(counts_matrix, experiment_matrix, variable, covariates, outpu
                 cond1 = as.character(combs[1, i])
                 cond2 = as.character(combs[2, i])
                 contrast = c(variable, cond1, cond2)
+                print(contrast)
 
                 # get results
                 res <- results(dds, contrast=contrast, alpha=alpha, independentFiltering=FALSE)
@@ -1384,7 +1495,7 @@ def DESeq_analysis(counts_matrix, experiment_matrix, variable, covariates, outpu
 
                 # append to results
                 comparison_name = paste(cond1, cond2, sep="-")
-                output_name = paste0(output_prefix, ".", variable, ".", comparison_name, ".csv")
+                output_name = paste0("results/", output_prefix, ".", variable, ".", comparison_name, ".csv")
                 res["comparison"] = comparison_name
 
                 # coherce to character
@@ -1398,34 +1509,6 @@ def DESeq_analysis(counts_matrix, experiment_matrix, variable, covariates, outpu
             }
         return(result_files)
         }
-
-        alpha = 0.05
-        variable = "ibrutinib_treatment"
-        # covariates = "atac_seq_batch + patient_gender + del11q + del13q + del17p + tri12 + patient_id + treatment_response + "
-        output_prefix = "./results/deseq/deseq"
-        countData = read.csv2(paste0(dirname(output_prefix), "/counts_matrix.csv"), sep=",", row.names=1)
-        colData = read.csv2(paste0(dirname(output_prefix), "/experiment_matrix.csv"), sep=",", row.names=1)
-
-        # For each patient, how was the impact of treatment?
-        output_prefix = "./results/deseq/deseq.treatment_per_patient"
-        variable = "ibrutinib_treatment"
-        covariates = "patient_id + "
-        design = as.formula((paste("~", covariates, variable)))
-        print(design)
-        dds <- DESeqDataSetFromMatrix(
-            countData = countData, colData = colData,
-            design)
-
-        # Across patients, what determines the response?
-        output_prefix = "./results/deseq/deseq.combined"
-        variable = "ibrutinib_treatment_response"
-        covariates = "patient_id + "
-        design = as.formula((paste("~", covariates, variable)))
-        print(design)
-        dds <- DESeqDataSetFromMatrix(
-            countData = countData, colData = colData,
-            design)
-
 
     """)
 
@@ -1490,67 +1573,28 @@ def lola(bed_files, universe_file, output_folder):
     # convert the pandas dataframe to an R dataframe
     run(bed_files, universe_file, output_folder)
 
-
-def seq2pathway(bed_file, go_term_mapping):
-    """
-    Performs seq2pathway analysis on a bedfile with a region set.
-    """
-    import rpy2.robjects as robj
-    import pandas.rpy.common as com
-
-    run = robj.r("""
-        function(bed_file) {
-            library("seq2pathway")
-
-            input_df = read.table(bed_file)
-
-            results = runseq2pathway(
-                input_df, search_radius=150000, promoter_radius=2000,
-                genome=c("hg19"),
-                adjacent=FALSE, SNP=FALSE, PromoterStop=TRUE, NearestTwoDirection=TRUE,
-                DataBase=c("GOterm", "MsigDB_C5", 'MsigDB_C6'), FAIMETest=FALSE, FisherTest=TRUE,
-                collapsemethod=c("MaxMean", "function", "ME", "maxRowVariance", "MinMean", "absMinMean", "absMaxMean", "Average"),
-                alpha=5, B=100, na.rm=F, min_Intersect_Count=5
-            )
-            # extract content
-            BP = do.call(rbind.data.frame, results$gene2pathway_result.FET$GO_BP)
-            MF = do.call(rbind.data.frame, results$gene2pathway_result.FET$GO_MF)
-            CC = do.call(rbind.data.frame, results$gene2pathway_result.FET$GO_CC)
-
-            return(results)
-        }
-    """)
-    # convert to Python objects
-    results = com.convert_robj(run(bed_file))
-    # get only pathway results
-    results = results['gene2pathway_result.FET']
-    # concate results from different  ontologies
-    df2 = pd.DataFrame()
-    for ontology in ['MF', 'CC', 'BP']:
-        df = results["GO_" + ontology]
-        df['ontology'] = ontology
-        df2 = pd.concat([df2, df], ignore_index=True)
-
-    # intersect with GO term ID and name
-    names = pd.read_csv(go_term_mapping)
-    names.columns = ["Name", "GOID"]
-
-    df2 = df2.merge(names)
-
-    return df2
+    # for F in `find . -iname *_regions.bed`
+    # do
+    #     if  [ ! -f `dirname $F`/allEnrichments.txt ]; then
+    #         echo $F
+    #         sbatch -J LOLA_${F} -o ${F/_regions.bed/_lola.log} ~/run_LOLA.sh $F ~/projects/cll-ibrutinib/results/cll-ibrutinib.bed hg19 `dirname $F`
+    #     fi
+    # done
 
 
-def goverlap(genes_file, universe_file, output_file):
-    """
-    from https://github.com/endrebak/goverlap
-    """
-    cmd = """goverlap -a {0} -s hsap -n 12 -l 0.10 -x {1} > {2}
-    """.format(genes_file, universe_file, output_file)
+def bed_to_fasta(bed_file, fasta_file):
+    # write name column
+    bed = pd.read_csv(bed_file, sep='\t', header=None)
+    bed['name'] = bed[0] + ":" + bed[1].astype(str) + "-" + bed[2].astype(str)
+    bed[1] = bed[1].astype(int)
+    bed[2] = bed[2].astype(int)
+    bed.to_csv(bed_file + ".tmp.bed", sep='\t', header=None, index=False)
 
-    try:
-        os.system(cmd)
-    except:
-        pass
+    # do enrichment
+    cmd = "twoBitToFa ~/resources/genomes/hg19/hg19.2bit -bed={0} {1}".format(bed_file + ".tmp.bed", fasta_file)
+
+    os.system(cmd)
+    # os.system("rm %s" % bed_file + ".tmp.bed")
 
 
 def meme_ame(input_fasta, output_dir, background_fasta=None):
@@ -1558,20 +1602,25 @@ def meme_ame(input_fasta, output_dir, background_fasta=None):
     if background_fasta is None:
         shuffled = input_fasta + ".shuffled"
         cmd = """
-        fasta-dinucleotide-shuffle -c 10 -f {0} > {1}
+        fasta-dinucleotide-shuffle -c 1 -f {0} > {1}
         """.format(input_fasta, shuffled)
-        print(cmd)
         os.system(cmd)
 
     cmd = """
-    ame --bgformat 1 --scoring avg --method ranksum --pvalue-report-threshold 0.05 \
+    ame --bgformat 1 --scoring avg --method ranksum --pvalue-report-threshold 0.05 \\
     --control {0} -o {1} {2} ~/resources/motifs/motif_databases/HUMAN/HOCOMOCOv9.meme
     """.format(background_fasta if background_fasta is not None else shuffled, output_dir, input_fasta)
-    print(cmd)
-
     os.system(cmd)
 
     os.system("rm %s" % shuffled)
+
+    # for F in `find . -iname *fa`
+    # do
+    #     if  [ ! -f `dirname $F`/ame.txt ]; then
+    #         echo $F
+    #         sbatch -J MEME-AME_${F} -o ${F/fa/ame.log} ~/run_AME.sh $F human
+    #     fi
+    # done
 
 
 def parse_ame(ame_dir):
@@ -1680,10 +1729,13 @@ def enrichr(dataframe, gene_set_libraries=None, kind="genes"):
 
 
 def characterize_regions_structure(df, prefix, output_dir, universe_df=None):
-    # use all cll sites as universe
+    # use all sites as universe
     if universe_df is None:
-        universe_df = pd.read_csv(os.path.join("data", "cll-ibrutinib_peaks.coverage_qnorm.log2.annotated.tsv"), sep="\t")
+        universe_df = pd.read_csv(os.path.join("results", "cll-ibrutinib.coverage_qnorm.log2.annotated.tsv"), sep="\t", index_col=0)
 
+    # make output dirs
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
     # compare genomic regions and chromatin_states
     enrichments = pd.DataFrame()
     for i, var in enumerate(['genomic_region', 'chromatin_state']):
@@ -1705,6 +1757,10 @@ def characterize_regions_structure(df, prefix, output_dir, universe_df=None):
         # sort for same order
         data.sort('region', inplace=True)
 
+        # g = sns.FacetGrid(col="region", data=data, col_wrap=3, sharey=True)
+        # g.map(sns.barplot, "set", "value")
+        # plt.savefig(os.path.join(output_dir, "%s_regions.%s.svg" % (prefix, var)), bbox_inches="tight")
+
         fc = pd.DataFrame(np.log2(both['subset'] / both['all']), columns=['value'])
         fc['variable'] = var
 
@@ -1716,9 +1772,13 @@ def characterize_regions_structure(df, prefix, output_dir, universe_df=None):
 
 
 def characterize_regions_function(df, output_dir, prefix, data_dir="data", universe_file=None):
-    # use all cll sites as universe
+    # use all sites as universe
     if universe_file is None:
-        universe_file = os.path.join(data_dir, "cll-ibrutinib_peaks.bed")
+        universe_file = os.path.join(data_dir, "cll-ibrutinib.bed")
+
+    # make output dirs
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
 
     # save to bed
     bed_file = os.path.join(output_dir, "%s_regions.bed" % prefix)
@@ -1732,18 +1792,18 @@ def characterize_regions_function(df, output_dir, prefix, data_dir="data", unive
     # export ensembl gene names
     df['ensembl_gene_id'].str.split(",").apply(pd.Series, 1).stack().drop_duplicates().to_csv(os.path.join(output_dir, "%s_genes.ensembl.txt" % prefix), index=False)
 
-    # Lola
-    try:
-        lola(bed_file, universe_file, output_dir)
-    except:
-        print("LOLA analysis for %s failed!" % prefix)
-
     # Motifs
     # de novo motif finding - enrichment
     fasta_file = os.path.join(output_dir, "%s_regions.fa" % prefix)
     bed_to_fasta(bed_file, fasta_file)
 
     meme_ame(fasta_file, output_dir)
+
+    # Lola
+    try:
+        lola(bed_file, universe_file, output_dir)
+    except:
+        print("LOLA analysis for %s failed!" % prefix)
 
     # Enrichr
     results = enrichr(df[['chrom', 'start', 'end', "gene_name"]])
@@ -1838,14 +1898,14 @@ def gene_level_oppeness(self, samples):
     axis[1].scatter(u.ix[gu], t.ix[gu], color="red")
     axis[1].scatter(u.ix[gd], t.ix[gd], color="blue")
     axis[1].scatter(u.ix[i], t.ix[i], color="green")
-    fig.savefig(os.path.join(self.plots_dir, "gene_level.accessibility.svg"), bbox_inches="tight")
+    fig.savefig(os.path.join(self.results_dir, "gene_level.accessibility.svg"), bbox_inches="tight")
 
     # plot expression vs accessibility
     fig, axis = plt.subplots(1)
     axis.scatter(genes["log2_fold_change"], (u.ix[g] - t.ix[g]))
     axis.set_xlabel("Fold change gene expression (log2)")
     axis.set_ylabel("Difference in mean accessibility")
-    fig.savefig(os.path.join(self.plots_dir, "EGCG_targets.expression_vs_accessibility.svg"), bbox_inches="tight")
+    fig.savefig(os.path.join(self.results_dir, "EGCG_targets.expression_vs_accessibility.svg"), bbox_inches="tight")
 
     # plot expression vs accessibility
     t2 = self.coverage_qnorm_annotated.groupby("ensembl_gene_id").mean()[[s.name for s in samples if s.timepoint_name == 'EGCG_100uM']].mean(axis=1)
@@ -1854,7 +1914,7 @@ def gene_level_oppeness(self, samples):
     axis.scatter(genes["log2_fold_change"], (u.ix[g] - t2.ix[g]))
     axis.set_xlabel("Fold change gene expression (log2)")
     axis.set_ylabel("Difference in mean accessibility")
-    fig.savefig(os.path.join(self.plots_dir, "EGCG_targets.expression_vs_accessibility.untreated_EGCG_100uM.svg"), bbox_inches="tight")
+    fig.savefig(os.path.join(self.results_dir, "EGCG_targets.expression_vs_accessibility.untreated_EGCG_100uM.svg"), bbox_inches="tight")
 
     # Patient-specific
     n = set([s.patient_id for s in samples])
@@ -1868,7 +1928,7 @@ def gene_level_oppeness(self, samples):
         axis[i].set_title(p)
         axis[i].set_xlabel("Fold change gene expression (log2)")
         axis[i].set_ylabel("Difference in mean accessibility")
-    fig.savefig(os.path.join(self.plots_dir, "EGCG_targets.expression_vs_accessibility.untreated_EGCG_100uM.patient_specific.svg"), bbox_inches="tight")
+    fig.savefig(os.path.join(self.results_dir, "EGCG_targets.expression_vs_accessibility.untreated_EGCG_100uM.patient_specific.svg"), bbox_inches="tight")
 
 
 def main():
@@ -1883,6 +1943,13 @@ def main():
     # Start project
     prj = Project("metadata/project_config.yaml")
     prj.add_sample_sheet()
+    # temporary:
+    for sample in prj.samples:
+        sample.peaks = os.path.join(sample.paths.sample_root, "peaks", sample.name + "_peaks.narrowPeak")
+        sample.summits = os.path.join(sample.paths.sample_root, "peaks", sample.name + "_summits.bed")
+        sample.mapped = os.path.join(sample.paths.sample_root, "mapped", sample.name + ".trimmed.bowtie2.bam")
+        sample.filtered = os.path.join(sample.paths.sample_root, "mapped", sample.name + ".trimmed.bowtie2.filtered.bam")
+        sample.coverage = os.path.join(sample.paths.sample_root, "coverage", sample.name + ".cov")
 
     # Only pass_qc samples
     prj.samples = [s for s in prj.samples if s.pass_qc and s.ibrutinib_cohort]
@@ -1893,7 +1960,7 @@ def main():
     # Start analysis object
     analysis = Analysis(
         data_dir=os.path.join(".", "data"),
-        plots_dir=os.path.join(".", "results", "plots"),
+        results_dir=os.path.join(".", "results"),
         samples=prj.samples,
         pickle_file=os.path.join(".", "data", "analysis.pickle")
     )
@@ -1904,6 +1971,8 @@ def main():
     if args.generate:
         # Get consensus peak set from all samples
         analysis.get_consensus_sites(analysis.samples)
+        analysis.calculate_peak_support(analysis.samples)
+
         # GET CHROMATIN OPENNESS MEASUREMENTS, PLOT
         # Get coverage values for each peak in each sample of ATAC-seq and ChIPmentation
         analysis.measure_coverage(analysis.samples)
@@ -1921,7 +1990,7 @@ def main():
     else:
         analysis.sites = pybedtools.BedTool(os.path.join(analysis.data_dir, "cll-ibrutinib_peaks.bed"))
         analysis.gene_annotation = pd.read_csv(os.path.join(analysis.data_dir, "cll-ibrutinib_peaks.gene_annotation.csv"))
-        analysis.closest_tss_distances = pickle.load(open(os.path.join(analysis.data_dir, "cll-ibrutinib_peaks.closest_tss_distances.pickle"), "rb"))
+        analysis.closest_tss_distances = pickle.load(open(os.path.join(analysis.results_dir, "cll-ibrutinib_peaks.closest_tss_distances.pickle"), "rb"))
         analysis.region_annotation = pd.read_csv(os.path.join(analysis.data_dir, "cll-ibrutinib_peaks.region_annotation.csv"))
         analysis.region_annotation_b = pd.read_csv(os.path.join(analysis.data_dir, "cll-ibrutinib_peaks.region_annotation_background.csv"))
         analysis.chrom_state_annotation = pd.read_csv(os.path.join(analysis.data_dir, "cll-ibrutinib_peaks.chromatin_state.csv"))
@@ -1929,6 +1998,13 @@ def main():
         analysis.coverage = pd.read_csv(os.path.join(analysis.data_dir, "cll-ibrutinib_peaks.raw_coverage.tsv"), sep="\t", index_col=0)
         analysis.coverage_qnorm = pd.read_csv(os.path.join(analysis.data_dir, "cll-ibrutinib_peaks.coverage_qnorm.log2.tsv"), sep="\t", index_col=0)
         analysis.coverage_qnorm_annotated = pd.read_csv(os.path.join(analysis.data_dir, "cll-ibrutinib_peaks.coverage_qnorm.log2.annotated.tsv"), sep="\t", index_col=0)
+
+    # Plots
+    # plot general peak set features
+    analysis.plot_peak_characteristics()
+    # Plot rpkm features across peaks/samples
+    analysis.plot_coverage()
+    analysis.plot_variance()
 
     # Unsupervised analysis
     analysis.unsupervised(analysis.samples)
