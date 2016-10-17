@@ -30,8 +30,6 @@ sns.set_palette(sns.color_palette("colorblind"))
 matplotlib.rcParams["svg.fonttype"] = "none"
 matplotlib.rc('text', usetex=False)
 
-sys.setdefaultencoding('utf8')
-
 
 def pickle_me(function):
     """
@@ -807,12 +805,13 @@ class Analysis(object):
         plt.setp(g.ax_heatmap.yaxis.get_majorticklabels(), rotation=0)
         g.savefig(os.path.join(self.results_dir, "gene_lists.genes.all.genes.png"), bbox_inches="tight", dpi=300)
 
-    @pickle_me
-    def differential_analysis(self, samples, trait):
+    def differential_region_analysis(
+            self, samples, trait="ibrutinib_treatment",
+            variables=["atac_seq_batch", "patient_gender", "ighv_mutation_status", "timepoint_name", "ibrutinib_treatment"],
+            output_suffix="ibrutinib_treatment"):
         """
-        Discover differnetial regions across samples that are associated with a certain trait.
+        Discover differential regions across samples that are associated with a certain trait.
         """
-        import string
         import itertools
 
         sel_samples = [s for s in samples if not pd.isnull(getattr(s, trait))]
@@ -822,279 +821,290 @@ class Analysis(object):
 
         # Get experiment matrix
         experiment_matrix = pd.DataFrame([sample.as_series() for sample in sel_samples], index=[sample.name for sample in sel_samples])
+        # keep only variables
+        experiment_matrix = experiment_matrix[["sample_name"] + variables].fillna("Unknown")
 
         # Make output dir
-        output_dir = os.path.join(self.results_dir, "..", "deseq")
+        output_dir = os.path.join(self.results_dir, output_suffix)
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
 
-        # Two independent models asking different questions:
-        # all variables:
-        # variables = ["atac_seq_batch", "patient_id", "patient_gender", "del11q", "del13q", "del17p", "tri12", "treatment_response", "ibrutinib_treatment"]
+        # Run DESeq2 analysis
+        deseq_table = DESeq_analysis(
+            counts_matrix, experiment_matrix, trait, covariates=[x for x in variables if x != trait], output_prefix=os.path.join(output_dir, output_suffix), alpha=0.05)
+        deseq_table.columns = deseq_table.columns.str.replace(".", " ")
 
-        # 1) for each patient, how was the impact of treatment?
-        a = [
-            "./results/deseq/deseq.treatment_per_patient",
-            "ibrutinib_treatment",
-            ["patient_id"]]
+        # to just read in
+        # deseq_table = pd.read_csv(os.path.join(output_dir, output_suffix) + ".%s.csv" % trait, index_col=0)
+        # self.coverage_qnorm_annotated = pd.read_csv(os.path.join(self.results_dir, "breg_peaks.coverage_qnorm.log2.annotated.tsv"), sep="\t", index_col=0)
 
-        # 2) across patients, what determines the response?
-        b = [
-            "./results/deseq/deseq.response",
-            "treatment_response",
-            ["atac_seq_batch", "patient_gender", "del11q", "del13q", "del17p", "tri12", "ibrutinib_treatment"]]
+        df = self.coverage_qnorm_annotated.join(deseq_table)
+        df.to_csv(os.path.join(output_dir, output_suffix) + ".%s.annotated.csv" % trait)
 
-        for output_prefix, variable, covariates in [a, b]:
+        # Extract significant based on p-value and fold-change
+        diff = df[(df["padj"] < 0.05)]
 
-            # # Run DESeq2 analysis
-            # deseq_table = DESeq_analysis(
-            #     counts_matrix, experiment_matrix, variable,
-            #     covariates=covariates,
-            #     output_prefix=output_prefix,
-            #     alpha=0.05)
+        if diff.shape[0] < 1:
+            print("No significantly different regions found.")
+            return
 
-            # to just read in
-            deseq_table = pd.read_csv(os.path.join(output_prefix + ".%s.csv" % variable), index_col=0)
+        groups = list(set([getattr(s, trait) for s in sel_samples]))
+        comparisons = pd.Series(df['comparison'].unique())
 
-            df = self.coverage_qnorm.join(deseq_table)
+        # Statistics of differential regions
+        import string
+        total_sites = float(len(self.sites))
 
-            # Extract significant based on p-value and fold-change
-            diff = df[(df["padj"] < 0.05)]
+        total_diff = diff.groupby(["comparison"])['stat'].count().sort_values(ascending=False)
+        fig, axis = plt.subplots(1)
+        sns.barplot(total_diff.values, total_diff.index, orient="h", ax=axis)
+        for t in axis.get_xticklabels():
+            t.set_rotation(0)
+        sns.despine(fig)
+        fig.savefig(os.path.join(output_dir, "%s.%s.number_differential.total.svg" % (output_suffix, trait)), bbox_inches="tight")
+        # percentage of total
+        fig, axis = plt.subplots(1)
+        sns.barplot(
+            (total_diff.values / total_sites) * 100,
+            total_diff.index,
+            orient="h", ax=axis)
+        for t in axis.get_xticklabels():
+            t.set_rotation(0)
+        sns.despine(fig)
+        fig.savefig(os.path.join(output_dir, "%s.%s.number_differential.total_percentage.svg" % (output_suffix, trait)), bbox_inches="tight")
 
-            groups = pd.Series([getattr(s, variable) for s in sel_samples]).dropna().unique().tolist()
-            comparisons = pd.Series(df['comparison'].unique())
+        # direction-dependent
+        diff["direction"] = diff["log2FoldChange"].apply(lambda x: "up" if x >= 0 else "down")
 
-            # # Statistics of differential regions
-            # # direction-dependent
-            # diff["direction"] = diff["log2FoldChange"].apply(lambda x: "up" if x >= 0 else "down")
+        split_diff = diff.groupby(["comparison", "direction"])['stat'].count().sort_values(ascending=False)
+        fig, axis = plt.subplots(1, figsize=(12, 8))
+        sns.barplot(
+            split_diff.values,
+            split_diff.reset_index()[['comparison', 'direction']].apply(string.join, axis=1),
+            orient="h", ax=axis)
+        for t in axis.get_xticklabels():
+            t.set_rotation(0)
+        sns.despine(fig)
+        fig.savefig(os.path.join(output_dir, "%s.%s.number_differential.split.svg" % (output_suffix, trait)), bbox_inches="tight")
+        # percentage of total
+        fig, axis = plt.subplots(1, figsize=(12, 8))
+        sns.barplot(
+            (split_diff.values / total_sites) * 100,
+            split_diff.reset_index()[['comparison', 'direction']].apply(string.join, axis=1),
+            orient="h", ax=axis)
+        for t in axis.get_xticklabels():
+            t.set_rotation(0)
+        sns.despine(fig)
+        fig.savefig(os.path.join(output_dir, "%s.%s.number_differential.split_percentage.svg" % (output_suffix, trait)), bbox_inches="tight")
 
-            # split_diff = diff.groupby(["direction"]).apply(len).sort_values(ascending=False)
-            # fig, axis = plt.subplots(1, figsize=(12, 8))
-            # sns.barplot(
-            #     split_diff.values,
-            #     split_diff.reset_index()[['direction']].apply(string.join, axis=1),
-            #     orient="h", ax=axis)
-            # for t in axis.get_xticklabels():
-            #     t.set_rotation(0)
-            # sns.despine(fig)
-            # fig.savefig(os.path.join("%s.%s.number_differential.split.svg" % (output_prefix, variable)), bbox_inches="tight")
+        # # Pyupset
+        # import pyupset as pyu
+        # # Build dict
+        # diff["comparison_direction"] = diff[["comparison", "direction"]].apply(string.join, axis=1)
+        # df_dict = {group: diff[diff["comparison_direction"] == group].reset_index()[['index']] for group in set(diff["comparison_direction"])}
+        # # Plot
+        # plot = pyu.plot(df_dict, unique_keys=['index'], inters_size_bounds=(10, np.inf))
+        # plot['figure'].set_size_inches(20, 8)
+        # plot['figure'].savefig(os.path.join(output_dir, "%s.%s.number_differential.upset.svg" % (output_suffix, trait)), bbox_inched="tight")
 
-            # #
+        # Pairwise scatter plots
+        fig, axes = plt.subplots(int(np.ceil(len(groups) / 1.5)), 3, figsize=(15, 15), sharex=True, sharey=True)
+        axes = iter(axes.flatten())
+        for cond1, cond2 in sorted(list(itertools.combinations(groups, 2)), key=lambda x: len(x[0])):
+            # get comparison
+            comparison = comparisons[comparisons.str.contains(cond1) & comparisons.str.contains(cond2)].squeeze()
+            if type(comparison) is pd.Series:
+                if len(comparison) > 1:
+                    comparison = comparison.iloc[0]
 
-            # # Pairwise scatter plots
-            # fig, axis = plt.subplots(1, figsize=(6, 6), sharex=True, sharey=True)
-            # for cond1, cond2 in sorted(list(itertools.combinations(groups, 2)), key=lambda x: len(x[0])):
-            #     # get comparison
-            #     comparison = comparisons[comparisons.str.contains(cond1) & comparisons.str.contains(cond2)].squeeze()
-            #     if type(comparison) is pd.Series:
-            #         if len(comparison) > 1:
-            #             comparison = comparison.iloc[0]
+            df2 = df[df["comparison"] == comparison]
+            if df2.shape[0] == 0:
+                continue
+            axis = axes.next()
 
-            #     df2 = df[df["comparison"] == comparison]
-            #     if df2.shape[0] == 0:
-            #         continue
+            # Hexbin plot
+            axis.hexbin(np.log2(1 + df2[cond1]), np.log2(1 + df2[cond2]), bins="log", alpha=.85)
+            axis.set_xlabel(cond1)
 
-            #     # Hexbin plot
-            #     axis.hexbin(np.log2(1 + df2[cond1]), np.log2(1 + df2[cond2]), bins="log", alpha=.75)
-            #     axis.set_xlabel(cond1)
+            diff2 = diff[diff["comparison"] == comparison]
+            if diff2.shape[0] > 0:
+                # Scatter plot
+                axis.scatter(np.log2(1 + diff2[cond1]), np.log2(1 + diff2[cond2]), alpha=0.1, color="red", s=2)
+            axis.set_ylabel(cond2)
+        sns.despine(fig)
+        fig.savefig(os.path.join(output_dir, "%s.%s.scatter_plots.png" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
 
-            #     diff2 = diff[diff["comparison"] == comparison]
-            #     if diff2.shape[0] > 0:
-            #         # Scatter plot
-            #         axis.scatter(np.log2(1 + diff2[cond1]), np.log2(1 + diff2[cond2]), alpha=0.5, color="red", s=2)
-            #     axis.set_ylabel(cond2)
-            # sns.despine(fig)
-            # fig.savefig(os.path.join("%s.%s.scatter_plots.png" % (output_prefix, variable)), bbox_inches="tight", dpi=300)
+        # Volcano plots
+        fig, axes = plt.subplots(int(np.ceil(len(groups) / 1.5)), 3, figsize=(15, 15), sharex=True, sharey=True)
+        axes = iter(axes.flatten())
+        for cond1, cond2 in sorted(list(itertools.combinations(groups, 2)), key=lambda x: len(x[0])):
+            # get comparison
+            comparison = comparisons[comparisons.str.contains(cond1) & comparisons.str.contains(cond2)].squeeze()
+            if type(comparison) is pd.Series:
+                if len(comparison) > 1:
+                    comparison = comparison.iloc[0]
 
-            # # Volcano plots
-            # fig, axis = plt.subplots(1, figsize=(6, 6), sharex=True, sharey=True)
-            # for cond1, cond2 in sorted(list(itertools.combinations(groups, 2)), key=lambda x: len(x[0])):
-            #     # get comparison
-            #     comparison = comparisons[comparisons.str.contains(cond1) & comparisons.str.contains(cond2)].squeeze()
-            #     if type(comparison) is pd.Series:
-            #         if len(comparison) > 1:
-            #             comparison = comparison.iloc[0]
+            df2 = df[df["comparison"] == comparison]
+            if df2.shape[0] == 0:
+                continue
+            axis = axes.next()
 
-            #     df2 = df[df["comparison"] == comparison]
-            #     if df2.shape[0] == 0:
-            #         continue
+            # hexbin
+            axis.hexbin(df2["log2FoldChange"], -np.log10(df2['padj']), alpha=0.85, color="black", bins='log', mincnt=1)
 
-            #     # hexbin
-            #     axis.hexbin(df2["log2FoldChange"], -np.log10(df2['padj']), alpha=0.75, color="black", bins='log', mincnt=1)
+            diff2 = diff[diff["comparison"] == comparison]
+            if diff2.shape[0] > 0:
+                # significant scatter
+                axis.scatter(diff2["log2FoldChange"], -np.log10(diff2['padj']), alpha=0.2, color="red", s=2)
+            axis.set_title(comparison)
+        sns.despine(fig)
+        fig.savefig(os.path.join(output_dir, "%s.%s.volcano_plots.png" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
 
-            #     diff2 = diff[diff["comparison"] == comparison]
-            #     if diff2.shape[0] > 0:
-            #         # significant scatter
-            #         axis.scatter(diff2["log2FoldChange"], -np.log10(diff2['padj']), alpha=0.5, color="red", s=2)
-            #     axis.set_title(comparison)
-            # sns.despine(fig)
-            # fig.savefig(os.path.join("%s.%s.volcano_plots.png" % (output_prefix, variable)), bbox_inches="tight", dpi=300)
+        # MA plots
+        fig, axes = plt.subplots(int(np.ceil(len(groups) / 1.5)), 6, figsize=(15, 15), sharex=True, sharey=True)
+        axes = iter(axes.flatten())
+        for cond1, cond2 in sorted(list(itertools.combinations(groups, 2)), key=lambda x: len(x[0])):
+            # get comparison
+            comparison = comparisons[comparisons.str.contains(cond1) & comparisons.str.contains(cond2)].squeeze()
+            if type(comparison) is pd.Series:
+                if len(comparison) > 1:
+                    comparison = comparison.iloc[0]
 
-            # # MA plots
-            # fig, axis = plt.subplots(1, figsize=(6, 6), sharex=True, sharey=True)
-            # for cond1, cond2 in sorted(list(itertools.combinations(groups, 2)), key=lambda x: len(x[0])):
-            #     # get comparison
-            #     comparison = comparisons[comparisons.str.contains(cond1) & comparisons.str.contains(cond2)].squeeze()
-            #     if type(comparison) is pd.Series:
-            #         if len(comparison) > 1:
-            #             comparison = comparison.iloc[0]
+            df2 = df[df["comparison"] == comparison]
+            if df2.shape[0] == 0:
+                continue
+            axis = axes.next()
 
-            #     df2 = df[df["comparison"] == comparison]
-            #     if df2.shape[0] == 0:
-            #         continue
+            # hexbin
+            axis.hexbin(np.log2(df2["baseMean"]), df2["log2FoldChange"], alpha=0.85, color="black", bins='log', mincnt=1)
 
-            #     # hexbin
-            #     axis.hexbin(np.log2(df2["baseMean"]), df2["log2FoldChange"], alpha=0.75, color="black", bins='log', mincnt=1)
+            diff2 = diff[diff["comparison"] == comparison]
+            if diff2.shape[0] > 0:
+                # significant scatter
+                axis.scatter(np.log2(diff2["baseMean"]), diff2["log2FoldChange"], alpha=0.2, color="red", s=2)
+            axis.set_title(comparison)
+        sns.despine(fig)
+        fig.savefig(os.path.join(output_dir, "%s.%s.ma_plots.png" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
 
-            #     diff2 = diff[diff["comparison"] == comparison]
-            #     if diff2.shape[0] > 0:
-            #         # significant scatter
-            #         axis.scatter(np.log2(diff2["baseMean"]), diff2["log2FoldChange"], alpha=0.5, color="red", s=2)
-            #     axis.set_title(comparison)
-            # sns.despine(fig)
-            # fig.savefig(os.path.join("%s.%s.ma_plots.png" % (output_prefix, variable)), bbox_inches="tight", dpi=300)
+        # save unique differential regions
+        diff2 = diff[groups].ix[diff.index.unique()].drop_duplicates()
+        diff2.to_csv(os.path.join(output_dir, "%s.%s.differential_regions.csv" % (output_suffix, trait)))
 
-            # Exploration of differential regions
+        # Exploration of differential regions
+        # get unique differential regions
+        df2 = pd.merge(diff2, self.coverage_qnorm_annotated)
 
-            # Get rankings
-            # get effect size
-            diff["effect_size"] = diff[groups[1]] - diff[groups[0]]
+        # Characterize regions
+        prefix = "%s.%s.diff_regions" % (output_suffix, trait)
+        # region's structure
+        # characterize_regions_structure(df=df2, prefix=prefix, output_dir=output_dir)
+        # region's function
+        # characterize_regions_function(df=df2, prefix=prefix, output_dir=output_dir)
 
-            # rank effect size, fold change and p-value
-            diff["effect_size_rank"] = diff["effect_size"].rank(ascending=False)
-            diff["log2FoldChange_rank"] = diff["log2FoldChange"].rank(ascending=False)
-            diff["padj_rank"] = diff["padj"].rank(ascending=True)
-            # max (worst ranking) of those
-            diff["max_rank"] = diff[["effect_size_rank", "log2FoldChange_rank", "padj_rank"]].max(1)
-            diff = diff.sort_values("max_rank")
+        # Heatmaps
+        # Comparison level
+        ax = sns.clustermap(np.log2(1 + df2[groups]).corr(), xticklabels=False)
+        for item in ax.ax_heatmap.get_yticklabels():
+            item.set_rotation(0)
+        plt.savefig(os.path.join(output_dir, "%s.%s.diff_regions.groups.clustermap.corr.png" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
+        plt.close('all')
 
-            # Plot 4000 top ranked regions
-            g = sns.clustermap(
-                diff[[s.name for s in samples]].head(4000),
-                yticklabels=False,
-                xticklabels=[" - ".join([s.patient_id, str(getattr(s, variable))]) for s in samples],
-                standard_scale=0)
-            plt.setp(g.ax_heatmap.xaxis.get_majorticklabels(), rotation=90)
-            g.savefig(os.path.join("%s.clustermap.std0.top_4000_ranked.png" % output_prefix), bbox_inches="tight", dpi=300)
-            plt.close('all')
+        ax = sns.clustermap(np.log2(1 + df2[groups]), yticklabels=False)
+        for item in ax.ax_heatmap.get_xticklabels():
+            item.set_rotation(90)
+        plt.savefig(os.path.join(output_dir, "%s.%s.diff_regions.groups.clustermap.png" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
+        plt.close('all')
 
-            # Examine each region cluster
-            region_enr = pd.DataFrame()
-            lola_enr = pd.DataFrame()
-            motif_enr = pd.DataFrame()
-            enrichr_enr = pd.DataFrame()
-            for cond1, cond2 in sorted(list(itertools.combinations(groups, 2)), key=lambda x: len(x[0])):
-                # get comparison
-                comparison = comparisons[comparisons.str.contains(cond1) & comparisons.str.contains(cond2)].squeeze()
+        ax = sns.clustermap(np.log2(1 + df2[groups]), yticklabels=False, z_score=0)
+        for item in ax.ax_heatmap.get_xticklabels():
+            item.set_rotation(90)
+        plt.savefig(os.path.join(output_dir, "%s.%s.diff_regions.groups.clustermap.z0.png" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
+        plt.close('all')
 
-                if type(comparison) is pd.Series:
-                    if len(comparison) > 1:
-                        comparison = comparison.iloc[0]
+        # Sample level
+        ax = sns.clustermap(df2[[s.name for s in sel_samples]].corr(), xticklabels=False)
+        for item in ax.ax_heatmap.get_yticklabels():
+            item.set_rotation(0)
+        plt.savefig(os.path.join(output_dir, "%s.%s.diff_regions.samples.clustermap.corr.png" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
+        plt.close('all')
 
-                # Separate in up/down-regulated regions
-                for f, direction in [(np.less, "down"), (np.greater, "up")]:
-                    comparison_df = self.coverage_qnorm_annotated.ix[diff[
-                        (diff["comparison"] == comparison) &
-                        (f(diff["log2FoldChange"], 0))
-                    ].index]
+        ax = sns.clustermap(df2[[s.name for s in sel_samples]], yticklabels=False)
+        for item in ax.ax_heatmap.get_xticklabels():
+            item.set_rotation(90)
+        plt.savefig(os.path.join(output_dir, "%s.%s.diff_regions.samples.clustermap.png" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
+        plt.close('all')
 
-                    # Characterize regions
-                    prefix = ".".join([output_prefix, variable, comparison, direction])
-                    name = ".".join([variable, comparison, direction])
-                    if not os.path.exists(prefix):
-                        os.makedirs(prefix)
+        ax = sns.clustermap(df2[[s.name for s in sel_samples]], yticklabels=False, z_score=0)
+        for item in ax.ax_heatmap.get_xticklabels():
+            item.set_rotation(90)
+        plt.savefig(os.path.join(output_dir, "%s.%s.diff_regions.samples.clustermap.z0.png" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
+        plt.close('all')
 
-                    print("Doing regions of comparison %s, with prefix %s" % (comparison, prefix))
+        # Examine each region cluster
+        region_enr = pd.DataFrame()
+        lola_enr = pd.DataFrame()
+        motif_enr = pd.DataFrame()
+        pathway_enr = pd.DataFrame()
+        for cond1, cond2 in sorted(list(itertools.combinations(groups, 2)), key=lambda x: len(x[0])):
+            # get comparison
+            comparison = comparisons[comparisons.str.contains(cond1) & comparisons.str.contains(cond2)].squeeze()
 
-                    # region's structure
-                    if not os.path.exists(os.path.join(prefix, prefix + "_regions.region_enrichment.csv")):
-                        characterize_regions_structure(df=comparison_df, prefix=os.path.basename(prefix), output_dir=prefix)
-                    # region's function
-                    if not os.path.exists(os.path.join(prefix, prefix + "_regions.enrichr.csv")):
-                        characterize_regions_function(df=comparison_df, prefix=os.path.basename(prefix), output_dir=prefix)
+            if type(comparison) is pd.Series:
+                if len(comparison) > 1:
+                    comparison = comparison.iloc[0]
 
-                    # Read/parse enrichment outputs and add to DFs
-                    enr = pd.read_csv(os.path.join(prefix, os.path.basename(prefix) + "_regions.region_enrichment.csv"))
-                    enr.columns = ["region"] + enr.columns[1:].tolist()
-                    enr["comparison"] = name
-                    region_enr = region_enr.append(enr, ignore_index=True)
+            # Separate in up/down-regulated regions
+            for f, direction in [(np.less, "down"), (np.greater, "up")]:
+                comparison_df = self.coverage_qnorm_annotated.ix[diff[
+                    (diff["comparison"] == comparison) &
+                    (f(diff["log2FoldChange"], 0))
+                ].index]
+                if comparison_df.shape[0] < 1:
+                    continue
+                # Characterize regions
+                prefix = "%s.%s.diff_regions.comparison_%s.%s" % (output_suffix, trait, comparison, direction)
 
-                    enr = pd.read_csv(os.path.join(prefix, "allEnrichments.txt"), sep="\t")
-                    enr["comparison"] = name
-                    lola_enr = lola_enr.append(enr, ignore_index=True)
+                comparison_dir = os.path.join(output_dir, prefix)
 
-                    enr = parse_ame(prefix).reset_index()
-                    enr["comparison"] = name
-                    motif_enr = motif_enr.append(enr, ignore_index=True)
+                print("Doing regions of comparison %s, with prefix %s" % (comparison, prefix))
 
-                    enr = pd.read_csv(os.path.join(prefix, os.path.basename(prefix) + "_regions.enrichr.csv"))
-                    enr["comparison"] = name
-                    enrichr_enr = enrichr_enr.append(enr, ignore_index=True)
+                # region's structure
+                if not os.path.exists(os.path.join(comparison_dir, prefix + "_regions.region_enrichment.csv")):
+                    print(prefix)
+                    characterize_regions_structure(df=comparison_df, prefix=prefix, output_dir=comparison_dir)
+                # region's function
+                if not os.path.exists(os.path.join(comparison_dir, prefix + "_regions.enrichr.csv")):
+                    print(prefix)
+                    characterize_regions_function(df=comparison_df, prefix=prefix, output_dir=comparison_dir)
 
-            motif_enr.columns = ["motifs", "p_value", "comparison"]
+                # Read/parse enrichment outputs and add to DFs
+                enr = pd.read_csv(os.path.join(comparison_dir, prefix + "_regions.region_enrichment.csv"))
+                enr.columns = ["region"] + enr.columns[1:].tolist()
+                enr["comparison"] = prefix
+                region_enr = region_enr.append(enr, ignore_index=True)
 
-            # write combined enrichemnts
-            region_enr.to_csv(
-                os.path.join("%s.%s.diff_regions.regions.csv" % (output_prefix, variable)), index=False)
-            lola_enr.to_csv(
-                os.path.join("%s.%s.diff_regions.lola.csv" % (output_prefix, variable)), index=False)
-            motif_enr.to_csv(
-                os.path.join("%s.%s.diff_regions.motifs.csv" % (output_prefix, variable)), index=True)
-            enrichr_enr.to_csv(
-                os.path.join("%s.%s.diff_regions.enrichr.csv" % (output_prefix, variable)), index=False)
+                enr = pd.read_csv(os.path.join(comparison_dir, "allEnrichments.txt"), sep="\t")
+                enr["comparison"] = prefix
+                lola_enr = lola_enr.append(enr, ignore_index=True)
 
-            # Get unique ids
-            lola_enr["label"] = lola_enr.apply(lambda x: "-".join([str(i) for i in x[["description", "cellType", "tissue", "antibody", "treatment", "dataSource"]].tolist()]), axis=1)
+                enr = parse_ame(comparison_dir).reset_index()
+                enr["comparison"] = prefix
+                motif_enr = motif_enr.append(enr, ignore_index=True)
 
-            # Get significant
-            lola_sig = lola_enr[(lola_enr["pValueLog"] > 1.3)]
-            motif_sig = motif_enr[(motif_enr["p_value"] < 0.05)]
-            enrichr_sig = enrichr_enr[(enrichr_enr["adjusted_p_value"] < 0.05) & (enrichr_enr["gene_set_library"] != "ChEA_2015")]
+                enr = pd.read_csv(os.path.join(comparison_dir, prefix + "_genes.enrichr.csv"))
+                enr["comparison"] = prefix
+                pathway_enr = pathway_enr.append(enr, ignore_index=True)
 
-            # Show the top 30 most enriched LOLA sets per region set
-            for i, comparison in enumerate(sorted(lola_sig["comparison"].unique())):
-                lola_comparison = lola_sig[lola_sig["comparison"] == comparison]
-                lola_comparison = lola_comparison.sort_values('pValueLog', ascending=False)
-
-                lola_comparison2 = lola_comparison.head(30)
-
-                fig, axis = plt.subplots(1)
-                g = sns.barplot(x='label', y='pValueLog', hue="collection", data=lola_comparison2, estimator=max, ax=axis)
-                for item in g.get_xticklabels():
-                    item.set_rotation(90)
-                sns.despine(fig)
-                fig.savefig(os.path.join("%s.%s.diff_regions.lola.%s.svg" % (output_prefix, variable, comparison)), bbox_inches="tight")
-
-            # Motifs - show the top 30 most enriched
-            for i, comparison in enumerate(sorted(motif_sig["comparison"].unique())):
-                motif_comparison = motif_sig[motif_sig["comparison"] == comparison]
-                motif_comparison["p_value"] = -np.log10(motif_comparison["p_value"])
-                motif_comparison = motif_comparison.sort_values('p_value', ascending=False)
-
-                motif_comparison2 = motif_comparison.head(30)
-
-                fig, axis = plt.subplots(1)
-                g = sns.barplot(x='motifs', y='p_value', data=motif_comparison2, estimator=max, ax=axis)
-                for item in g.get_xticklabels():
-                    item.set_rotation(90)
-                sns.despine(fig)
-                fig.savefig(os.path.join("%s.%s.diff_regions.motifs.%s.svg" % (output_prefix, variable, comparison)), bbox_inches="tight")
-
-            # Enrichr - show the top 30 most enriched per region set
-            for i, comparison in enumerate(sorted(enrichr_sig["comparison"].unique())):
-                enrichr_comparison = enrichr_sig[enrichr_sig["comparison"] == comparison]
-                enrichr_comparison = enrichr_comparison.sort_values('adjusted_p_value', ascending=True)
-
-                for i, gene_set_library in enumerate(sorted(enrichr_comparison["gene_set_library"].unique())):
-                    enrichr_comparison2 = enrichr_comparison[enrichr_comparison["gene_set_library"] == gene_set_library].head(30)
-                    enrichr_comparison2["adjusted_p_value"] = -np.log10(enrichr_comparison2["adjusted_p_value"])
-
-                    fig, axis = plt.subplots(1)
-                    g = sns.barplot(x='description', y='adjusted_p_value', data=enrichr_comparison2, estimator=max, ax=axis)
-                    for item in g.get_xticklabels():
-                        item.set_rotation(90)
-                    sns.despine(fig)
-                    fig.savefig(os.path.join("%s.%s.diff_regions.enrichr.%s.%s.svg" % (output_prefix, variable, comparison, gene_set_library)), bbox_inches="tight")
+        # write combined enrichments
+        region_enr.to_csv(
+            os.path.join(output_dir, "%s.%s.diff_regions.regions.csv" % (output_suffix, trait)), index=False)
+        lola_enr.to_csv(
+            os.path.join(output_dir, "%s.%s.diff_regions.lola.csv" % (output_suffix, trait)), index=False)
+        motif_enr.columns = ["motif", "p_value", "comparison"]
+        motif_enr.to_csv(
+            os.path.join(output_dir, "%s.%s.diff_regions.motifs.csv" % (output_suffix, trait)), index=False)
+        pathway_enr.to_csv(
+            os.path.join(output_dir, "%s.%s.diff_regions.enrichr.csv" % (output_suffix, trait)), index=False)
 
 
 def add_args(parser):
@@ -1445,8 +1455,14 @@ def DESeq_analysis(counts_matrix, experiment_matrix, variable, covariates, outpu
         run = function(countData, colData, variable, covariates, output_prefix, alpha) {
             library(DESeq2)
 
-            colData$replicate = as.factor(colData$replicate)
+            alpha = 0.05
+            output_prefix = "ibrutinib_treatment" # "patient_specific"
+            countData = read.csv("counts_matrix.csv", sep=",", row.names=1)
+            colData = read.csv("experiment_matrix.csv", sep=",")
 
+            variable = "timepoint_name" # "patient_id"
+            # covariates = "atac_seq_batch + patient_gender + ighv_mutation_status +"
+            covariates = "patient_id +"
             design = as.formula((paste("~", covariates, variable)))
             print(design)
             dds <- DESeqDataSetFromMatrix(
@@ -1527,7 +1543,7 @@ def DESeq_analysis(counts_matrix, experiment_matrix, variable, covariates, outpu
     results = pd.DataFrame()
     for result_file in result_files:
         df = pd.read_csv(result_file)
-        df.index = counts_matrix.index
+        df.index = counts_matrix.index  # not actually needed, as it reads from file
 
         results = results.append(df)
 
@@ -1577,7 +1593,7 @@ def lola(bed_files, universe_file, output_folder):
     # do
     #     if  [ ! -f `dirname $F`/allEnrichments.txt ]; then
     #         echo $F
-    #         sbatch -J LOLA_${F} -o ${F/_regions.bed/_lola.log} ~/run_LOLA.sh $F ~/projects/cll-ibrutinib/results/cll-ibrutinib.bed hg19 `dirname $F`
+    #         sbatch -J LOLA_${F} -o ${F/_regions.bed/}_lola.log ~/run_LOLA.sh $F ~/projects/cll-ibrutinib/results/cll-ibrutinib_peaks.bed hg19 `dirname $F`
     #     fi
     # done
 
@@ -1618,7 +1634,7 @@ def meme_ame(input_fasta, output_dir, background_fasta=None):
     # do
     #     if  [ ! -f `dirname $F`/ame.txt ]; then
     #         echo $F
-    #         sbatch -J MEME-AME_${F} -o ${F/fa/ame.log} ~/run_AME.sh $F human
+    #         sbatch -J MEME-AME_${F} -o ${F/fa/}ame.log ~/run_AME.sh $F human
     #     fi
     # done
 
@@ -1727,11 +1743,19 @@ def enrichr(dataframe, gene_set_libraries=None, kind="genes"):
 
     return results
 
+    # for F in `find . -iname *_genes.symbols.txt`
+    # do
+    #     if  [ ! -f ${F/symbols.txt/enrichr.csv} ]; then
+    #         echo $F
+    #         sbatch -J ENRICHR_${F} -o ${F/symbols.txt/}enrichr.log ~/run_Enrichr.sh $F
+    #     fi
+    # done
+
 
 def characterize_regions_structure(df, prefix, output_dir, universe_df=None):
     # use all sites as universe
     if universe_df is None:
-        universe_df = pd.read_csv(os.path.join("results", "cll-ibrutinib.coverage_qnorm.log2.annotated.tsv"), sep="\t", index_col=0)
+        universe_df = pd.read_csv(os.path.join("results", "cll-ibrutinib_peaks.coverage_qnorm.log2.annotated.tsv"), sep="\t", index_col=0)
 
     # make output dirs
     if not os.path.exists(output_dir):
@@ -1771,10 +1795,10 @@ def characterize_regions_structure(df, prefix, output_dir, universe_df=None):
     enrichments.to_csv(os.path.join(output_dir, "%s_regions.region_enrichment.csv" % prefix), index=True)
 
 
-def characterize_regions_function(df, output_dir, prefix, data_dir="data", universe_file=None):
+def characterize_regions_function(df, output_dir, prefix, results_dir="results", universe_file=None):
     # use all sites as universe
     if universe_file is None:
-        universe_file = os.path.join(data_dir, "cll-ibrutinib.bed")
+        universe_file = os.path.join(results_dir, "cll-ibrutinib.bed")
 
     # make output dirs
     if not os.path.exists(output_dir):
@@ -1988,16 +2012,16 @@ def main():
         # genomic location, mean and variance measurements across samples
         analysis.annotate(analysis.samples)
     else:
-        analysis.sites = pybedtools.BedTool(os.path.join(analysis.data_dir, "cll-ibrutinib_peaks.bed"))
-        analysis.gene_annotation = pd.read_csv(os.path.join(analysis.data_dir, "cll-ibrutinib_peaks.gene_annotation.csv"))
+        analysis.sites = pybedtools.BedTool(os.path.join(analysis.results_dir, "cll-ibrutinib_peaks.bed"))
+        analysis.gene_annotation = pd.read_csv(os.path.join(analysis.results_dir, "cll-ibrutinib_peaks.gene_annotation.csv"))
         analysis.closest_tss_distances = pickle.load(open(os.path.join(analysis.results_dir, "cll-ibrutinib_peaks.closest_tss_distances.pickle"), "rb"))
-        analysis.region_annotation = pd.read_csv(os.path.join(analysis.data_dir, "cll-ibrutinib_peaks.region_annotation.csv"))
-        analysis.region_annotation_b = pd.read_csv(os.path.join(analysis.data_dir, "cll-ibrutinib_peaks.region_annotation_background.csv"))
-        analysis.chrom_state_annotation = pd.read_csv(os.path.join(analysis.data_dir, "cll-ibrutinib_peaks.chromatin_state.csv"))
-        analysis.chrom_state_annotation_b = pd.read_csv(os.path.join(analysis.data_dir, "cll-ibrutinib_peaks.chromatin_state_background.csv"))
-        analysis.coverage = pd.read_csv(os.path.join(analysis.data_dir, "cll-ibrutinib_peaks.raw_coverage.tsv"), sep="\t", index_col=0)
-        analysis.coverage_qnorm = pd.read_csv(os.path.join(analysis.data_dir, "cll-ibrutinib_peaks.coverage_qnorm.log2.tsv"), sep="\t", index_col=0)
-        analysis.coverage_qnorm_annotated = pd.read_csv(os.path.join(analysis.data_dir, "cll-ibrutinib_peaks.coverage_qnorm.log2.annotated.tsv"), sep="\t", index_col=0)
+        analysis.region_annotation = pd.read_csv(os.path.join(analysis.results_dir, "cll-ibrutinib_peaks.region_annotation.csv"))
+        analysis.region_annotation_b = pd.read_csv(os.path.join(analysis.results_dir, "cll-ibrutinib_peaks.region_annotation_background.csv"))
+        analysis.chrom_state_annotation = pd.read_csv(os.path.join(analysis.results_dir, "cll-ibrutinib_peaks.chromatin_state.csv"))
+        analysis.chrom_state_annotation_b = pd.read_csv(os.path.join(analysis.results_dir, "cll-ibrutinib_peaks.chromatin_state_background.csv"))
+        analysis.coverage = pd.read_csv(os.path.join(analysis.results_dir, "cll-ibrutinib_peaks.raw_coverage.tsv"), sep="\t", index_col=0)
+        analysis.coverage_qnorm = pd.read_csv(os.path.join(analysis.results_dir, "cll-ibrutinib_peaks.coverage_qnorm.log2.tsv"), sep="\t", index_col=0)
+        analysis.coverage_qnorm_annotated = pd.read_csv(os.path.join(analysis.results_dir, "cll-ibrutinib_peaks.coverage_qnorm.log2.annotated.tsv"), sep="\t", index_col=0)
 
     # Plots
     # plot general peak set features
@@ -2010,9 +2034,18 @@ def main():
     analysis.unsupervised(analysis.samples)
 
     # Differential analysis
-    analysis.differential_analysis([s for s in analysis.samples if s.ibrutinib_cohort == 1], "ibrutinib_treatment")
-    analysis.differential_analysis(analysis.samples, "under_treatment")
-
+    analysis.differential_region_analysis(
+        samples=analysis.samples,
+        trait="timepoint_name",
+        variables=["atac_seq_batch", "patient_gender", "ighv_mutation_status", "timepoint_name"],
+        output_suffix="ibrutinib_treatment"
+    )
+    analysis.differential_region_analysis(
+        samples=analysis.samples,
+        trait="patient_id",
+        variables=["atac_seq_batch", "patient_gender", "ighv_mutation_status", "timepoint_name", "patient_id"],
+        output_suffix="patient_specific"
+    )
 
 if __name__ == '__main__':
     try:
