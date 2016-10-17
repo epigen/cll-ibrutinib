@@ -1294,6 +1294,195 @@ class Analysis(object):
             fig.savefig(os.path.join(output_dir, "enrichr.%s.cluster_specific.png" % gene_set_library), bbox_inches="tight", dpi=300)
 
 
+def pharmacoscopy(analysis):
+    """
+    """
+    output_dir = os.path.join(analysis.results_dir, "pharmacoscopy")
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    tcn = pd.read_csv(os.path.join(analysis.data_dir, "pharmacoscopy_TCN.csv"))
+    cd19 = pd.read_csv(os.path.join(analysis.data_dir, "pharmacoscopy_cd19.csv"))
+    auc = pd.read_csv(os.path.join(analysis.data_dir, "pharmacoscopy_AUC.csv"))
+    sensitivity = pd.read_csv(os.path.join(analysis.data_dir, "pharmacoscopy_sensitivity.csv"))
+
+    # merge in one table
+    (
+        pd.merge(pd.merge(auc, cd19, how="outer"), sensitivity, how="outer")
+        .sort_values(['original_patient_id', 'timepoint', 'drug', 'concentration'])
+        .to_csv(os.path.join(analysis.data_dir, "pharmacoscopy_all.csv"), index=False))
+
+    # Plot distributions
+    # tcn
+
+    # cd19
+
+    # auc & sensitivity
+    for df, name in [(sensitivity, "sensitivity"), (auc, "AUC")]:
+        if name == "sensitivity":
+            df['p_id'] = df['original_patient_id'] + " " + df['timepoint'] + " " + df['concentration'].astype(str)
+        else:
+            df['p_id'] = df['original_patient_id'] + " " + df['timepoint']
+        df_pivot = df.pivot_table(index="p_id", columns="drug", values=name)
+        # noise = np.random.normal(0, 0.1, df_pivot.shape[0] * df_pivot.shape[1]).reshape(df_pivot.shape)
+        # df_pivot = df_pivot.add(noise)
+        if name == "sensitivity":
+            df_pivot = np.log2(1 + df_pivot)
+
+        # Mean across patients
+        df_mean = df.groupby(['drug', 'timepoint'])[name].mean().reset_index()
+        fig, axis = plt.subplots(len(df_mean['timepoint'].unique()))
+        for i, timepoint in enumerate(df_mean['timepoint'].unique()):
+            sns.distplot(df_mean[df_mean['timepoint'] == timepoint][name].dropna(), kde=False, ax=axis[i])
+            axis[i].set_title(timepoint)
+        fig.savefig(os.path.join(output_dir, "{}.timepoints.distplot.svg".format(name)), bbox_inches="tight")
+
+        # Timepoints and concentrations together
+        fig = sns.clustermap(df_pivot.drop("DMSO", axis=1), figsize=(20, 8))
+        for tick in fig.ax_heatmap.get_xticklabels():
+            tick.set_rotation(90)
+        for tick in fig.ax_heatmap.get_yticklabels():
+            tick.set_rotation(0)
+        fig.savefig(os.path.join(output_dir, "{}.svg".format(name)), bbox_inches="tight")
+
+        fig = sns.clustermap(df_pivot.drop("DMSO", axis=1), z_score=1, figsize=(20, 8))
+        for tick in fig.ax_heatmap.get_xticklabels():
+            tick.set_rotation(90)
+        for tick in fig.ax_heatmap.get_yticklabels():
+            tick.set_rotation(0)
+        fig.savefig(os.path.join(output_dir, "{}.zscore.svg".format(name)), bbox_inches="tight")
+
+        # Normalized to DMSO
+        if name == "sensitivity":
+            df_pivot = df[df['concentration'] == 10].pivot_table(index="p_id", columns="drug", values=name)
+            df_pivot2 = df_pivot.copy()
+            for col in df_pivot.columns:
+                df_pivot2.loc[:, col] = df_pivot2.loc[:, col] - df_pivot2['DMSO']
+
+            fig = sns.clustermap(np.log10(10 + df_pivot2.drop("DMSO", axis=1)), figsize=(20, 8))
+            for tick in fig.ax_heatmap.get_xticklabels():
+                tick.set_rotation(90)
+            for tick in fig.ax_heatmap.get_yticklabels():
+                tick.set_rotation(0)
+            fig.savefig(os.path.join(output_dir, "{}.DMSO_norm.svg".format(name)), bbox_inches="tight")
+
+            fig = sns.clustermap(np.log10(10 + df_pivot2.drop("DMSO", axis=1)), z_score=1, figsize=(20, 8))
+            for tick in fig.ax_heatmap.get_xticklabels():
+                tick.set_rotation(90)
+            for tick in fig.ax_heatmap.get_yticklabels():
+                tick.set_rotation(0)
+            fig.savefig(os.path.join(output_dir, "{}.DMSO_norm.zscore.svg".format(name)), bbox_inches="tight")
+
+        # Concentrations separately
+        if name == "sensitivity":
+            for concentration in df['concentration'].unique():
+                df2 = df[df['concentration'] == concentration]
+                df2['p_id'] = df2['original_patient_id'] + df2['timepoint']
+                df_pivot2 = df2.pivot_table(index="p_id", columns="drug", values=name)
+
+                fig = sns.clustermap(np.log2(1 + df_pivot2), figsize=(20, 8))
+                for tick in fig.ax_heatmap.get_xticklabels():
+                    tick.set_rotation(90)
+                for tick in fig.ax_heatmap.get_yticklabels():
+                    tick.set_rotation(0)
+                fig.savefig(os.path.join(output_dir, "{}.concentration_{}.svg".format(name, concentration)), bbox_inches="tight")
+
+                fig = sns.clustermap(np.log2(1 + df_pivot2), figsize=(20, 8), z_score=1)
+                for tick in fig.ax_heatmap.get_xticklabels():
+                    tick.set_rotation(90)
+                for tick in fig.ax_heatmap.get_yticklabels():
+                    tick.set_rotation(0)
+                fig.savefig(os.path.join(output_dir, "{}.concentration_{}.zscore.svg".format(name, concentration)), bbox_inches="tight")
+
+        # Difference between timepoints (mean of concentrations)
+        df_pivot2 = (
+            df.groupby(['original_patient_id', 'drug', 'timepoint'])
+            [name].mean()
+            .reset_index())
+        post = df_pivot2[df_pivot2['timepoint'] == "post"].pivot_table(index="original_patient_id", columns="drug", values=name)
+        pre = df_pivot2[df_pivot2['timepoint'] == "pre"].pivot_table(index="original_patient_id", columns="drug", values=name)
+
+        if name != "sensitivity":
+            post = post.drop("DMSO", axis=1)
+            pre = pre.drop("DMSO", axis=1)
+
+        rel_diff = np.log2((1 + post) / (1 + pre))
+        abs_diff = post - pre
+
+        fig = sns.clustermap(rel_diff, figsize=(20, 8))
+        for tick in fig.ax_heatmap.get_xticklabels():
+            tick.set_rotation(90)
+        for tick in fig.ax_heatmap.get_yticklabels():
+            tick.set_rotation(0)
+        fig.savefig(os.path.join(output_dir, "{}.timepoint_change.rel_diff.svg".format(name)), bbox_inches="tight")
+
+        fig = sns.clustermap(rel_diff, figsize=(20, 8), z_score=1)
+        for tick in fig.ax_heatmap.get_xticklabels():
+            tick.set_rotation(90)
+        for tick in fig.ax_heatmap.get_yticklabels():
+            tick.set_rotation(0)
+        fig.savefig(os.path.join(output_dir, "{}.timepoint_change.rel_diff.zscore.svg".format(name)), bbox_inches="tight")
+
+        fig = sns.clustermap(abs_diff, figsize=(20, 8))
+        for tick in fig.ax_heatmap.get_xticklabels():
+            tick.set_rotation(90)
+        for tick in fig.ax_heatmap.get_yticklabels():
+            tick.set_rotation(0)
+        fig.savefig(os.path.join(output_dir, "{}.timepoint_change.abs_diff.svg".format(name)), bbox_inches="tight")
+
+        fig = sns.clustermap(abs_diff, figsize=(20, 8), z_score=1)
+        for tick in fig.ax_heatmap.get_xticklabels():
+            tick.set_rotation(90)
+        for tick in fig.ax_heatmap.get_yticklabels():
+            tick.set_rotation(0)
+        fig.savefig(os.path.join(output_dir, "{}.timepoint_change.abs_diff.zscore.svg".format(name)), bbox_inches="tight")
+
+        # Test
+        from scipy.stats import mannwhitneyu, ks_2samp, ttest_ind
+        from statsmodels.sandbox.stats.multicomp import multipletests
+        test_results = pd.DataFrame(columns=[
+            "post", "pre", "m", "a", "mannwhitneyu_stat", "mannwhitneyu_p_value",
+            "ks_2samp_stat", "ks_2samp_p_value", "ttest_ind_stat", "ttest_ind_p_value"])
+        for drug in post.columns:
+            r, g = post[drug].mean(), pre[drug].mean()
+            m = np.log(r / g)
+            a = (1 / 2.) * np.log2(r * g)
+            mannwhitneyu_stat, mannwhitneyu_p = mannwhitneyu(post[drug], pre[drug])
+            ks_2samp_stat, ks_2samp_p = ks_2samp(post[drug], pre[drug])
+            ttest_ind_stat, ttest_ind_p = ttest_ind(post[drug], pre[drug])
+            test_results = test_results.append(
+                pd.Series([
+                    r, g, m, a, mannwhitneyu_stat, mannwhitneyu_p,
+                    ks_2samp_stat, ks_2samp_p, ttest_ind_stat, ttest_ind_p],
+                    index=[
+                        "post", "pre", "m", "a", "mannwhitneyu_stat", "mannwhitneyu_p_value",
+                        "ks_2samp_stat", "ks_2samp_p_value", "ttest_ind_stat", "ttest_ind_p_value"], name=drug))
+        for test in ["mannwhitneyu", "ks_2samp", "ttest_ind"]:
+            test_results.loc[:, test + "_q_value"] = multipletests(test_results[test + "_p_value"], method="fdr_bh")[1]
+
+        fig, axis = plt.subplots(1, 3, figsize=(12, 4), sharex=False, sharey=False)
+        # Plot scatter
+        axis[0].scatter(test_results["post"], test_results["pre"], alpha=0.8)
+        axis[0].set_title("Scatter")
+        axis[0].set_xlabel("Post")
+        axis[0].set_ylabel("Pre")
+
+        # Plot MA
+        axis[1].scatter(test_results["m"], test_results["a"], alpha=0.8)
+        axis[1].set_title("MA")
+        axis[1].set_xlabel("M")
+        axis[1].set_ylabel("A")
+
+        # Plot Volcano
+        axis[2].scatter(test_results["m"], -np.log10(test_results["mannwhitneyu_q_value"]), color="grey", alpha=0.5)
+        axis[2].scatter(test_results["m"], -np.log10(test_results["mannwhitneyu_p_value"]), alpha=0.8)
+        axis[2].set_title("Volcano")
+        axis[2].set_xlabel("M")
+        axis[2].set_ylabel("-log10(p-value)")
+        sns.despine(fig)
+        fig.savefig(os.path.join(output_dir, "{}.timepoint_change.tests.svg".format(name)), bbox_inches="tight")
+
+
 def add_args(parser):
     """
     Options for project and pipelines.
