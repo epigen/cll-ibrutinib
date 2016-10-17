@@ -1297,6 +1297,113 @@ class Analysis(object):
 def pharmacoscopy(analysis):
     """
     """
+    def annotate_drugs():
+        """
+        """
+        rename = {
+            "ABT-199 = Venetoclax": "ABT-199",
+            "ABT-263 = Navitoclax": "ABT-263",
+            "ABT-869 = Linifanib": "ABT-869",
+            "AC220 = Quizartinib": "AC220",
+            "Buparlisib (BKM120)": "BKM120",
+            "EGCG = Epigallocatechin gallate": "Epigallocatechin gallate",
+            "JQ1": "(+)-JQ1",
+            "MLN-518 = Tandutinib": "MLN-518",
+            "Selinexor (KPT-330)": "KPT-330"}
+        sensitivity["proper_name"] = sensitivity["drug"]
+        for p, n in rename.items():
+            sensitivity["proper_name"] = sensitivity["proper_name"].replace(p, n)
+
+        # CLOUD id/ SMILES
+        cloud = pd.read_csv(os.path.join("data", "CLOUD_simple_annotation.csv"))
+        cloud.loc[:, "name_lower"] = cloud["drug_name"].str.lower()
+        sensitivity.loc[:, "name_lower"] = sensitivity["proper_name"].str.lower()
+        annot = pd.merge(sensitivity[['drug', 'proper_name', 'name_lower']].drop_duplicates(), cloud, on="name_lower", how="left")
+
+        # DGIdb -> target genes
+        interact = pd.read_csv("http://dgidb.genome.wustl.edu/downloads/interactions.tsv", sep="\t")
+        interact.loc[:, "name_lower"] = interact["drug_primary_name"].str.lower()
+        cats = pd.read_csv("http://dgidb.genome.wustl.edu/downloads/categories.tsv", sep="\t")
+        dgidb = pd.merge(interact, cats, how="left")
+        dgidb.to_csv(os.path.join(analysis.data_dir, "dgidb.interactions_categories.csv"), index=False)
+
+        # Tight match
+        annot = pd.merge(annot, dgidb, on="name_lower", how="left")
+        annot.to_csv(os.path.join(analysis.data_dir, "drugs_annotated.csv"), index=False)
+
+        # alchemy -> annotate patways
+
+        # Plot annotations
+        from mpl_toolkits.axes_grid1.inset_locator import zoomed_inset_axes
+        fig, axis = plt.subplots(2, 3, figsize=(12, 8))
+        axis = axis.flatten()
+
+        # how many genes per drug?
+        # sns.distplot(annot.groupby(["proper_name"])['entrez_gene_symbol'].nunique(), ax=axis[0], kde=False)
+        # sns.distplot(dgidb.groupby(["drug_primary_name"])['entrez_gene_symbol'].nunique(), ax=axis[0], kde=False)
+        axis[0].set_title("Genes per drug")
+        mats0 = annot.groupby(["proper_name"])['entrez_gene_symbol'].nunique()
+        mats0_a = dgidb.groupby(["drug_primary_name"])['entrez_gene_symbol'].nunique()
+        axis[0].hist([mats0, mats0_a], max(mats0.tolist() + mats0_a.tolist()), normed=True, histtype='bar', align='mid', alpha=0.8)
+        axis[0].set_xlabel("Genes")
+
+        ax = zoomed_inset_axes(axis[0], 3, loc=1, axes_kwargs={"xlim": (0, 30), "ylim": (0, .20)})
+        ax.hist([mats0, mats0_a], max(mats0.tolist() + mats0_a.tolist()), normed=True, histtype='bar', align='mid', alpha=0.8)
+
+        # support of each drug-> gene assignment
+        # sns.distplot(annot.groupby(["proper_name", "entrez_gene_symbol"])['interaction_claim_source'].nunique(), ax=axis[1], kde=False)
+        # sns.distplot(dgidb.groupby(["drug_primary_name", "entrez_gene_symbol"])['interaction_claim_source'].nunique(), ax=axis[1], kde=False)
+        axis[1].set_title("Support of each interaction")
+        mats1 = annot.groupby(["proper_name", "entrez_gene_symbol"])['interaction_claim_source'].nunique()
+        mats1_a = dgidb.groupby(["drug_primary_name", "entrez_gene_symbol"])['interaction_claim_source'].nunique()
+        axis[1].hist([mats1, mats1_a], max(mats1.tolist() + mats1_a.tolist()), normed=True, histtype='bar', align='mid', alpha=0.8)
+        axis[1].set_xlabel("Sources")
+
+        # types of interactions per drug (across genes)
+        # sns.distplot(annot.groupby(["proper_name"])['interaction_types'].nunique(), ax=axis[2], kde=False)
+        # sns.distplot(dgidb.groupby(["drug_primary_name"])['interaction_types'].nunique(), ax=axis[2], kde=False)
+        axis[2].set_title("Interaction types per drug")
+        mats2 = annot.groupby(["proper_name"])['interaction_types'].nunique()
+        mats2_a = dgidb.groupby(["drug_primary_name"])['interaction_types'].nunique()
+        axis[2].hist([mats2, mats2_a], max(mats2.tolist() + mats2_a.tolist()), normed=True, histtype='bar', align='mid', alpha=0.8)
+        axis[2].set_xlabel("Interaction types")
+
+        # types of interactions per drug-> assignemnt
+        # sns.distplot(annot.groupby(["proper_name", "entrez_gene_symbol"])['interaction_types'].nunique(), ax=axis[3], kde=False)
+        # sns.distplot(dgidb.groupby(["drug_primary_name", "entrez_gene_symbol"])['interaction_types'].nunique(), ax=axis[3], kde=False)
+        axis[3].set_title("Interactions types per drug->gene interaction")
+        mats3 = annot.groupby(["proper_name", "entrez_gene_symbol"])['interaction_types'].nunique()
+        mats3_a = dgidb.groupby(["drug_primary_name", "entrez_gene_symbol"])['interaction_types'].nunique()
+        axis[3].hist([mats3, mats3_a], max(mats3.tolist() + mats3_a.tolist()), normed=True, histtype='bar', align='mid', alpha=0.8)
+        axis[3].set_xlabel("Interaction types")
+
+        # types of catergories per drug (across genes)
+        # sns.distplot(annot.groupby(["proper_name"])['interaction_types'].nunique(), ax=axis[4], kde=False)
+        # sns.distplot(dgidb.groupby(["drug_primary_name"])['interaction_types'].nunique(), ax=axis[4], kde=False)
+        axis[4].set_title("Categories per drug")
+        mats4 = annot.groupby(["proper_name"])['interaction_types'].nunique()
+        mats4_a = dgidb.groupby(["drug_primary_name"])['interaction_types'].nunique()
+        axis[4].hist([mats4, mats4_a], max(mats4.tolist() + mats4_a.tolist()), normed=True, histtype='bar', align='mid', alpha=0.8)
+        axis[4].set_xlabel("Categories")
+
+        # types of catergories per drug-> assignemnt
+        # sns.distplot(annot.groupby(["proper_name", "entrez_gene_symbol"])['interaction_types'].nunique(), ax=axis[5], kde=False)
+        # sns.distplot(dgidb.groupby(["drug_primary_name", "entrez_gene_symbol"])['interaction_types'].nunique(), ax=axis[5], kde=False)
+        axis[5].set_title("Categories per drug->gene interaction")
+        mats5 = annot.groupby(["proper_name", "entrez_gene_symbol"])['interaction_types'].nunique()
+        mats5_a = dgidb.groupby(["drug_primary_name", "entrez_gene_symbol"])['interaction_types'].nunique()
+        axis[5].hist([mats5, mats5_a], max(mats5.tolist() + mats5_a.tolist()), normed=True, histtype='bar', align='mid', alpha=0.8)
+        axis[5].set_xlabel("Categories")
+
+        sns.despine(fig)
+        fig.savefig(os.path.join(analysis.data_dir, "drugs_annotations.svg"), bbox_inches="tight")
+
+    #
+    class Q():
+        data_dir = "data"
+        results_dir = "results"
+    analysis = Q()
+
     output_dir = os.path.join(analysis.results_dir, "pharmacoscopy")
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
