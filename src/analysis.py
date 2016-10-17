@@ -1106,6 +1106,193 @@ class Analysis(object):
         pathway_enr.to_csv(
             os.path.join(output_dir, "%s.%s.diff_regions.enrichr.csv" % (output_suffix, trait)), index=False)
 
+    def investigate_differential_regions(self, trait="condition", output_suffix="deseq", n=50):
+        import string
+        from scipy.cluster.hierarchy import fcluster
+
+        output_dir = os.path.join(self.results_dir, output_suffix)
+
+        # REGION TYPES
+        # read in
+        regions = pd.read_csv(os.path.join(output_dir, "%s.%s.diff_regions.regions.csv" % (output_suffix, trait)))
+        # pretty names
+        regions["comparison"] = regions["comparison"].str.extract("%s.%s.diff_regions.comparison_(.*)" % (output_suffix, trait), expand=True)
+
+        # pivot table
+        regions_pivot = pd.pivot_table(regions, values="value", columns="region", index="comparison")
+
+        # fillna
+        regions_pivot = regions_pivot.fillna(0)
+
+        # plot correlation
+        fig = sns.clustermap(regions_pivot)
+        for tick in fig.ax_heatmap.get_xticklabels():
+            tick.set_rotation(90)
+        for tick in fig.ax_heatmap.get_yticklabels():
+            tick.set_rotation(0)
+        fig.savefig(os.path.join(output_dir, "region_type_enrichment.svg"), bbox_inches="tight")
+        fig.savefig(os.path.join(output_dir, "region_type_enrichment.png"), bbox_inches="tight", dpi=300)
+
+        #
+
+        # LOLA
+        # read in
+        lola = pd.read_csv(os.path.join(output_dir, "%s.%s.diff_regions.lola.csv" % (output_suffix, trait)))
+        # pretty names
+        lola["comparison"] = lola["comparison"].str.extract("%s.%s.diff_regions.comparison_(.*)" % (output_suffix, trait), expand=True)
+
+        # unique ids for lola sets
+        cols = ['description', u'cellType', u'tissue', u'antibody', u'treatment', u'dataSource', u'filename']
+        lola['label'] = lola[cols].astype(str).apply(string.join, axis=1)
+
+        # pivot table
+        lola_pivot = pd.pivot_table(lola, values="pValueLog", columns="label", index="comparison")
+        lola_pivot.columns = lola_pivot.columns.str.decode("utf-8")
+
+        # plot correlation
+        fig = sns.clustermap(lola_pivot.T.corr())
+        for tick in fig.ax_heatmap.get_xticklabels():
+            tick.set_rotation(90)
+        for tick in fig.ax_heatmap.get_yticklabels():
+            tick.set_rotation(0)
+        fig.savefig(os.path.join(output_dir, "lola.correlation.svg"), bbox_inches="tight")
+        fig.savefig(os.path.join(output_dir, "lola.correlation.png"), bbox_inches="tight", dpi=300)
+
+        cluster_assignment = fcluster(fig.dendrogram_col.linkage, 3, criterion="maxclust")
+
+        # Get top n terms which are more in each cluster compared with all others
+        top_terms = list()
+        cluster_means = pd.DataFrame()
+        for cluster in set(cluster_assignment):
+            cluster_comparisons = lola_pivot.index[cluster_assignment == cluster].tolist()
+            other_comparisons = lola_pivot.index[cluster_assignment != cluster].tolist()
+
+            terms = (lola_pivot.ix[cluster_comparisons].mean() - lola_pivot.ix[other_comparisons].mean()).sort_values()
+
+            top_terms += terms.dropna().head(n).index.tolist()
+
+            # additionallly, get mean of cluster
+            cluster_means[cluster] = lola_pivot.ix[cluster_comparisons].mean()
+
+        # plot clustered heatmap
+        fig = sns.clustermap(lola_pivot[list(set(top_terms))].replace({np.inf: 50}), z_score=0, figsize=(20, 12))
+        for tick in fig.ax_heatmap.get_xticklabels():
+            tick.set_rotation(90)
+        for tick in fig.ax_heatmap.get_yticklabels():
+            tick.set_rotation(0)
+        fig.savefig(os.path.join(output_dir, "lola.cluster_specific.svg"), bbox_inches="tight")
+        fig.savefig(os.path.join(output_dir, "lola.cluster_specific.png"), bbox_inches="tight", dpi=300)
+
+        #
+
+        # MOTIFS
+        # read in
+        motifs = pd.read_csv(os.path.join(output_dir, "%s.%s.diff_regions.motifs.csv" % (output_suffix, trait)))
+        # pretty names
+        motifs["comparison"] = motifs["comparison"].str.extract("%s.%s.diff_regions.comparison_(.*)" % (output_suffix, trait), expand=True)
+
+        # pivot table
+        motifs_pivot = pd.pivot_table(motifs, values="p_value", columns="motif", index="comparison")
+
+        # transform p-values
+        motifs_pivot = -np.log10(motifs_pivot.fillna(1))
+        motifs_pivot = motifs_pivot.replace({np.inf: 300})
+
+        # plot correlation
+        fig = sns.clustermap(motifs_pivot.T.corr())
+        for tick in fig.ax_heatmap.get_xticklabels():
+            tick.set_rotation(90)
+        for tick in fig.ax_heatmap.get_yticklabels():
+            tick.set_rotation(0)
+        fig.savefig(os.path.join(output_dir, "motifs.correlation.svg"), bbox_inches="tight")
+        fig.savefig(os.path.join(output_dir, "motifs.correlation.png"), bbox_inches="tight", dpi=300)
+
+        cluster_assignment = fcluster(fig.dendrogram_col.linkage, 5, criterion="maxclust")
+
+        # Get top n terms which are more in each cluster compared with all others
+        top_terms = list()
+        cluster_means = pd.DataFrame()
+        for cluster in set(cluster_assignment):
+            cluster_comparisons = motifs_pivot.index[cluster_assignment == cluster].tolist()
+            other_comparisons = motifs_pivot.index[cluster_assignment != cluster].tolist()
+
+            terms = (motifs_pivot.ix[cluster_comparisons].mean() - motifs_pivot.ix[other_comparisons].mean()).sort_values()
+
+            top_terms += terms.dropna().head(n).index.tolist()
+
+        # plot clustered heatmap
+        fig = sns.clustermap(motifs_pivot[list(set(top_terms))], figsize=(20, 12))  # .apply(lambda x: (x - x.mean()) / x.std())
+        for tick in fig.ax_heatmap.get_xticklabels():
+            tick.set_rotation(90)
+        for tick in fig.ax_heatmap.get_yticklabels():
+            tick.set_rotation(0)
+        fig.savefig(os.path.join(output_dir, "motifs.cluster_specific.svg"), bbox_inches="tight")
+        fig.savefig(os.path.join(output_dir, "motifs.cluster_specific.png"), bbox_inches="tight", dpi=300)
+
+        df = motifs_pivot[list(set(top_terms))]  # .apply(lambda x: (x - x.mean()) / x.std())
+
+        fig = sns.clustermap(df[df.mean(1) > -0.5], figsize=(20, 12))
+        for tick in fig.ax_heatmap.get_xticklabels():
+            tick.set_rotation(90)
+        for tick in fig.ax_heatmap.get_yticklabels():
+            tick.set_rotation(0)
+        fig.savefig(os.path.join(output_dir, "motifs.cluster_specific.only_some.svg"), bbox_inches="tight")
+        fig.savefig(os.path.join(output_dir, "motifs.cluster_specific.only_some.png"), bbox_inches="tight", dpi=300)
+
+        #
+
+        # ENRICHR
+        # read in
+        enrichr = pd.read_csv(os.path.join(output_dir, "%s.%s.diff_regions.enrichr.csv" % (output_suffix, trait)))
+        # pretty names
+        enrichr["comparison"] = enrichr["comparison"].str.extract("%s.%s.diff_regions.comparison_(.*)" % (output_suffix, trait), expand=True)
+
+        for gene_set_library in enrichr["gene_set_library"].unique():
+            print(gene_set_library)
+            if gene_set_library == "Epigenomics_Roadmap_HM_ChIP-seq":
+                continue
+
+            # pivot table
+            enrichr_pivot = pd.pivot_table(
+                enrichr[enrichr["gene_set_library"] == gene_set_library],
+                values="adjusted_p_value", columns="description", index="comparison")
+            enrichr_pivot.columns = enrichr_pivot.columns.str.decode("utf-8")
+
+            # transform p-values
+            enrichr_pivot = -np.log10(enrichr_pivot.fillna(1))
+            enrichr_pivot = enrichr_pivot.replace({np.inf: 300})
+
+            # plot correlation
+            fig = sns.clustermap(enrichr_pivot.T.corr())
+            for tick in fig.ax_heatmap.get_xticklabels():
+                tick.set_rotation(90)
+            for tick in fig.ax_heatmap.get_yticklabels():
+                tick.set_rotation(0)
+            fig.savefig(os.path.join(output_dir, "enrichr.%s.correlation.svg" % gene_set_library), bbox_inches="tight")
+            fig.savefig(os.path.join(output_dir, "enrichr.%s.correlation.png" % gene_set_library), bbox_inches="tight", dpi=300)
+
+            cluster_assignment = fcluster(fig.dendrogram_col.linkage, 4, criterion="maxclust")
+
+            # Get top n terms which are more in each cluster compared with all others
+            top_terms = list()
+            cluster_means = pd.DataFrame()
+            for cluster in set(cluster_assignment):
+                cluster_comparisons = enrichr_pivot.index[cluster_assignment == cluster].tolist()
+                other_comparisons = enrichr_pivot.index[cluster_assignment != cluster].tolist()
+
+                terms = (enrichr_pivot.ix[cluster_comparisons].mean() - enrichr_pivot.ix[other_comparisons].mean()).sort_values()
+
+                top_terms += terms.dropna().head(n).index.tolist()
+
+            # plot clustered heatmap
+            fig = sns.clustermap(enrichr_pivot[list(set(top_terms))], figsize=(20, 12))  # .apply(lambda x: (x - x.mean()) / x.std())
+            for tick in fig.ax_heatmap.get_xticklabels():
+                tick.set_rotation(90)
+            for tick in fig.ax_heatmap.get_yticklabels():
+                tick.set_rotation(0)
+            fig.savefig(os.path.join(output_dir, "enrichr.%s.cluster_specific.svg" % gene_set_library), bbox_inches="tight")
+            fig.savefig(os.path.join(output_dir, "enrichr.%s.cluster_specific.png" % gene_set_library), bbox_inches="tight", dpi=300)
+
 
 def add_args(parser):
     """
