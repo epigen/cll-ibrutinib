@@ -1293,6 +1293,65 @@ class Analysis(object):
             fig.savefig(os.path.join(output_dir, "enrichr.%s.cluster_specific.svg" % gene_set_library), bbox_inches="tight")
             fig.savefig(os.path.join(output_dir, "enrichr.%s.cluster_specific.png" % gene_set_library), bbox_inches="tight", dpi=300)
 
+    def empirical_differential_analysis(
+            self, samples, group="patient_id", trait="timepoint_name",
+            output_suffix="ibrutinib_treatment", permutations=100, alpha=.95):
+        """
+        Discover differential regions for a condition with only one replicate.
+        """
+        import scipy
+        from statsmodels.sandbox.stats.multicomp import multipletests
+
+        # for each patient
+        results = pd.DataFrame()
+        for sample_group in np.unique([getattr(s, group) for s in samples]):
+            group_samples = [s for s in samples if getattr(s, group) == sample_group]
+
+            # get samples for each value in trait
+            sel_samples = list()
+            for trait_group in np.unique([getattr(s, trait) for s in group_samples]):
+                sel_samples += [s for s in group_samples if getattr(s, trait) == trait_group]
+            print(sample_group, sel_samples)
+
+            # generate null distributions with sampling
+            cov = self.coverage_qnorm_annotated[[s.name for s in sel_samples]]
+            null = list()
+            for i in range(permutations):
+                null += np.log2((1 + cov.iloc[:, 0].values) / (1 + cov.loc[np.random.permutation(cov.index.values), :].iloc[:, 1].values)).tolist()
+
+            # vizualize distribution (check normality)
+
+            # get distribution parameters, save
+            param = scipy.stats.norm.fit(null)
+            print(param)
+
+            # call differential based on distribution parameters, save
+            # low, high = scipy.stats.norm.interval(alpha, loc=param[0], scale=param[1])
+            res = pd.DataFrame(np.log2((1 + cov.iloc[:, 0]) / (1 + cov.iloc[:, 1])), columns=['fold_change'])
+            res['p_value'] = scipy.stats.norm.sf(abs(res['fold_change']), loc=param[0], scale=param[1]) * 2
+            res[group] = sample_group
+            results = results.append(res)
+
+        results['q_value'] = -np.log10(multipletests(results['p_value'], method="fdr_bh")[1])
+        results_pivot = pd.pivot_table(results.reset_index(), index='index', columns=group, values='p_value')
+
+        # select significant
+        g = sns.clustermap(
+            results_pivot.ix[results_pivot[(results_pivot < 0.1).any(1)].index].T,
+            z_score=1,
+            xticklabels=False
+        )
+        for item in g.ax_heatmap.get_yticklabels():
+            item.set_rotation(0)
+
+        g = sns.clustermap(
+            self.coverage_qnorm_annotated[[s.name for s in samples]].ix[results_pivot[(results_pivot < 0.05).any(1)].index].T,
+            z_score=1,
+            xticklabels=False
+        )
+        for item in g.ax_heatmap.get_yticklabels():
+            item.set_rotation(0)
+
 
 def pharmacoscopy(analysis):
     """
