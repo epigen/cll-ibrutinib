@@ -1297,6 +1297,10 @@ class Analysis(object):
 def pharmacoscopy(analysis):
     """
     """
+    from mpl_toolkits.axes_grid1.inset_locator import zoomed_inset_axes
+    from scipy.stats import mannwhitneyu, ks_2samp, ttest_ind
+    from statsmodels.sandbox.stats.multicomp import multipletests
+
     def annotate_drugs():
         """
         """
@@ -1334,7 +1338,6 @@ def pharmacoscopy(analysis):
         # alchemy -> annotate patways
 
         # Plot annotations
-        from mpl_toolkits.axes_grid1.inset_locator import zoomed_inset_axes
         fig, axis = plt.subplots(2, 3, figsize=(12, 8))
         axis = axis.flatten()
 
@@ -1399,11 +1402,6 @@ def pharmacoscopy(analysis):
         fig.savefig(os.path.join(analysis.data_dir, "drugs_annotations.svg"), bbox_inches="tight")
 
     #
-    class Q():
-        data_dir = "data"
-        results_dir = "results"
-    analysis = Q()
-
     output_dir = os.path.join(analysis.results_dir, "pharmacoscopy")
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -1412,6 +1410,36 @@ def pharmacoscopy(analysis):
     cd19 = pd.read_csv(os.path.join(analysis.data_dir, "pharmacoscopy_cd19.csv"))
     auc = pd.read_csv(os.path.join(analysis.data_dir, "pharmacoscopy_AUC.csv"))
     sensitivity = pd.read_csv(os.path.join(analysis.data_dir, "pharmacoscopy_sensitivity.csv"))
+
+    # transform AUC to inverse
+    auc["AUC"] *= -1
+    # scale values
+    sensitivity["sensitivity_scaled"] = np.log2(1 + abs(sensitivity["sensitivity"])) * (sensitivity["sensitivity"] > 0).astype(int).replace(0, -1)
+    auc["AUC_scaled"] = np.log2(1 + abs(auc["AUC"])) * (auc["AUC"] < 0).astype(int).replace(0, -1)
+
+    # demonstrate the scaling
+    fig, axis = plt.subplots(2, 2, figsize=(12, 12), sharex=False, sharey=False)
+    axis = axis.flatten()
+    # axis[0].set_title("original sensitivity")
+    sns.distplot(sensitivity['sensitivity'], bins=100, kde=False, ax=axis[0], label="original sensitivity")
+    ax = zoomed_inset_axes(axis[0], zoom=3, loc=1, axes_kwargs={"aspect": "auto", "xlim": (-5, 5), "ylim": (0, 3500)})
+    sns.distplot(sensitivity['sensitivity'], bins=300, kde=False, ax=ax)
+    axis[0].legend()
+    # axis[1].set_title("scaled sensitivity")
+    sns.distplot(np.log2(1 + abs(sensitivity["sensitivity"])), bins=50, kde=False, ax=axis[1], label="log2 absolute sensitivity")
+    sns.distplot(sensitivity["sensitivity_scaled"], bins=50, kde=False, ax=axis[1], label="log2 directional sensitivity")
+    axis[1].legend()
+    # axis[2].set_title("original AUC")
+    sns.distplot(auc['AUC'].dropna(), bins=100, kde=False, ax=axis[2], label="original AUC")
+    ax = zoomed_inset_axes(axis[2], zoom=6, loc=1, axes_kwargs={"aspect": "auto", "xlim": (-20, 20), "ylim": (0, 300)})
+    sns.distplot(auc['AUC'].dropna(), bins=300, kde=False, ax=ax)
+    axis[2].legend()
+    # axis[3].set_title("scaled AUC")
+    sns.distplot(np.log2(1 + abs(auc["AUC"].dropna())), bins=50, kde=False, ax=axis[3], label="log2 absolute AUC")
+    sns.distplot(auc["AUC_scaled"].dropna(), bins=50, kde=False, ax=axis[3], label="log2 directional AUC")
+    axis[3].legend()
+    sns.despine(fig)
+    fig.savefig(os.path.join(output_dir, "scaling_demo.svg"), bbox_inches="tight")
 
     # merge in one table
     (
@@ -1430,17 +1458,34 @@ def pharmacoscopy(analysis):
             df['p_id'] = df['original_patient_id'] + " " + df['timepoint'] + " " + df['concentration'].astype(str)
         else:
             df['p_id'] = df['original_patient_id'] + " " + df['timepoint']
-        df_pivot = df.pivot_table(index="p_id", columns="drug", values=name)
+
+        # Relation between variability and mean
+        if name == "sensitivity":
+            keys = ['original_patient_id', 'drug', 'concentration', 'timepoint']
+            mean = df.groupby(keys)[name + "_scaled"].mean().reset_index()
+            std = df.groupby(keys)[name + "_scaled"].std().reset_index()
+            mean_std = pd.merge(mean, std, on=keys, suffixes=["_mean", "_std"])
+
+            fig = sns.jointplot(
+                mean_std[name + "_scaled_mean"],
+                mean_std[name + "_scaled_std"], alpha=0.5)
+            fig.savefig(os.path.join(output_dir, "{}.mean_std.jointplot.svg".format(name)), bbox_inches="tight")
+
+            for concentration in df['concentration'].unique():
+                fig = sns.jointplot(
+                    mean_std[mean_std['concentration'] == concentration][name + "_scaled_mean"],
+                    mean_std[mean_std['concentration'] == concentration][name + "_scaled_std"], alpha=0.5)
+                fig.savefig(os.path.join(output_dir, "{}.mean_std.concentration_{}.jointplot.svg".format(name, concentration)), bbox_inches="tight")
+
+        df_pivot = df.pivot_table(index="p_id", columns="drug", values=name + "_scaled")
         # noise = np.random.normal(0, 0.1, df_pivot.shape[0] * df_pivot.shape[1]).reshape(df_pivot.shape)
         # df_pivot = df_pivot.add(noise)
-        if name == "sensitivity":
-            df_pivot = np.log2(1 + df_pivot)
 
         # Mean across patients
-        df_mean = df.groupby(['drug', 'timepoint'])[name].mean().reset_index()
+        df_mean = df.groupby(['drug', 'timepoint'])[name + "_scaled"].mean().reset_index()
         fig, axis = plt.subplots(len(df_mean['timepoint'].unique()))
         for i, timepoint in enumerate(df_mean['timepoint'].unique()):
-            sns.distplot(df_mean[df_mean['timepoint'] == timepoint][name].dropna(), kde=False, ax=axis[i])
+            sns.distplot(df_mean[df_mean['timepoint'] == timepoint][name + "_scaled"].dropna(), kde=False, ax=axis[i])
             axis[i].set_title(timepoint)
         fig.savefig(os.path.join(output_dir, "{}.timepoints.distplot.svg".format(name)), bbox_inches="tight")
 
@@ -1461,7 +1506,7 @@ def pharmacoscopy(analysis):
 
         # Normalized to DMSO
         if name == "sensitivity":
-            df_pivot = df[df['concentration'] == 10].pivot_table(index="p_id", columns="drug", values=name)
+            df_pivot = df[df['concentration'] == 10].pivot_table(index="p_id", columns="drug", values=name + "_scaled")
             df_pivot2 = df_pivot.copy()
             for col in df_pivot.columns:
                 df_pivot2.loc[:, col] = df_pivot2.loc[:, col] - df_pivot2['DMSO']
@@ -1485,16 +1530,16 @@ def pharmacoscopy(analysis):
             for concentration in df['concentration'].unique():
                 df2 = df[df['concentration'] == concentration]
                 df2['p_id'] = df2['original_patient_id'] + df2['timepoint']
-                df_pivot2 = df2.pivot_table(index="p_id", columns="drug", values=name)
+                df_pivot2 = df2.pivot_table(index="p_id", columns="drug", values=name + "_scaled")
 
-                fig = sns.clustermap(np.log2(1 + df_pivot2), figsize=(20, 8))
+                fig = sns.clustermap(df_pivot2, figsize=(20, 8))
                 for tick in fig.ax_heatmap.get_xticklabels():
                     tick.set_rotation(90)
                 for tick in fig.ax_heatmap.get_yticklabels():
                     tick.set_rotation(0)
                 fig.savefig(os.path.join(output_dir, "{}.concentration_{}.svg".format(name, concentration)), bbox_inches="tight")
 
-                fig = sns.clustermap(np.log2(1 + df_pivot2), figsize=(20, 8), z_score=1)
+                fig = sns.clustermap(df_pivot2, figsize=(20, 8), z_score=1)
                 for tick in fig.ax_heatmap.get_xticklabels():
                     tick.set_rotation(90)
                 for tick in fig.ax_heatmap.get_yticklabels():
@@ -1504,16 +1549,16 @@ def pharmacoscopy(analysis):
         # Difference between timepoints (mean of concentrations)
         df_pivot2 = (
             df.groupby(['original_patient_id', 'drug', 'timepoint'])
-            [name].mean()
+            [name + "_scaled"].mean()
             .reset_index())
-        post = df_pivot2[df_pivot2['timepoint'] == "post"].pivot_table(index="original_patient_id", columns="drug", values=name)
-        pre = df_pivot2[df_pivot2['timepoint'] == "pre"].pivot_table(index="original_patient_id", columns="drug", values=name)
+        post = df_pivot2[df_pivot2['timepoint'] == "post"].pivot_table(index="original_patient_id", columns="drug", values=name + "_scaled")
+        pre = df_pivot2[df_pivot2['timepoint'] == "pre"].pivot_table(index="original_patient_id", columns="drug", values=name + "_scaled")
 
         if name != "sensitivity":
             post = post.drop("DMSO", axis=1)
             pre = pre.drop("DMSO", axis=1)
 
-        rel_diff = np.log2((1 + post) / (1 + pre))
+        rel_diff = post / pre
         abs_diff = post - pre
 
         fig = sns.clustermap(rel_diff, figsize=(20, 8))
@@ -1545,27 +1590,29 @@ def pharmacoscopy(analysis):
         fig.savefig(os.path.join(output_dir, "{}.timepoint_change.abs_diff.zscore.svg".format(name)), bbox_inches="tight")
 
         # Test
-        from scipy.stats import mannwhitneyu, ks_2samp, ttest_ind
-        from statsmodels.sandbox.stats.multicomp import multipletests
         test_results = pd.DataFrame(columns=[
-            "post", "pre", "m", "a", "mannwhitneyu_stat", "mannwhitneyu_p_value",
+            "post", "pre", "m", "abs_m", "a", "mannwhitneyu_stat", "mannwhitneyu_p_value",
             "ks_2samp_stat", "ks_2samp_p_value", "ttest_ind_stat", "ttest_ind_p_value"])
         for drug in post.columns:
             r, g = post[drug].mean(), pre[drug].mean()
-            m = np.log(r / g)
-            a = (1 / 2.) * np.log2(r * g)
+            m = np.log2(r / g)
+            abs_m = r - g
+            a = np.log2(r * g) / 2.
             mannwhitneyu_stat, mannwhitneyu_p = mannwhitneyu(post[drug], pre[drug])
             ks_2samp_stat, ks_2samp_p = ks_2samp(post[drug], pre[drug])
             ttest_ind_stat, ttest_ind_p = ttest_ind(post[drug], pre[drug])
             test_results = test_results.append(
                 pd.Series([
-                    r, g, m, a, mannwhitneyu_stat, mannwhitneyu_p,
+                    r, g, m, abs_m, a, mannwhitneyu_stat, mannwhitneyu_p,
                     ks_2samp_stat, ks_2samp_p, ttest_ind_stat, ttest_ind_p],
                     index=[
-                        "post", "pre", "m", "a", "mannwhitneyu_stat", "mannwhitneyu_p_value",
+                        "post", "pre", "m", "abs_m", "a", "mannwhitneyu_stat", "mannwhitneyu_p_value",
                         "ks_2samp_stat", "ks_2samp_p_value", "ttest_ind_stat", "ttest_ind_p_value"], name=drug))
         for test in ["mannwhitneyu", "ks_2samp", "ttest_ind"]:
             test_results.loc[:, test + "_q_value"] = multipletests(test_results[test + "_p_value"], method="fdr_bh")[1]
+        # save
+        test_results.index.name = "drug"
+        test_results.sort_values("mannwhitneyu_p_value").to_csv(os.path.join(output_dir, "{}.timepoint_change.tests.csv".format(name)), index=True)
 
         fig, axis = plt.subplots(1, 3, figsize=(12, 4), sharex=False, sharey=False)
         # Plot scatter
@@ -1575,10 +1622,10 @@ def pharmacoscopy(analysis):
         axis[0].set_ylabel("Pre")
 
         # Plot MA
-        axis[1].scatter(test_results["m"], test_results["a"], alpha=0.8)
+        axis[1].scatter(test_results["a"], test_results["m"], alpha=0.8)
         axis[1].set_title("MA")
-        axis[1].set_xlabel("M")
-        axis[1].set_ylabel("A")
+        axis[1].set_xlabel("A")
+        axis[1].set_ylabel("M")
 
         # Plot Volcano
         axis[2].scatter(test_results["m"], -np.log10(test_results["mannwhitneyu_q_value"]), color="grey", alpha=0.5)
