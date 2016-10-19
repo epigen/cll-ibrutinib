@@ -46,11 +46,27 @@ class Analysis(object):
     Class to hold functions and data from analysis.
     """
 
-    def __init__(self, data_dir, results_dir, samples, pickle_file):
+    def __init__(
+            self,
+            data_dir=os.path.join(".", "data"),
+            results_dir=os.path.join(".", "results"),
+            pickle_file=os.path.join(".", "data", "analysis.pickle"),
+            samples=None,
+            prj=None,
+            from_pickle=False,
+            **kwargs):
+        # parse kwargs with default
         self.data_dir = data_dir
         self.results_dir = results_dir
         self.samples = samples
         self.pickle_file = pickle_file
+
+        # parse remaining kwargs
+        self.__dict__.update(kwargs)
+
+        # reload itself if required
+        if from_pickle:
+            self.__dict__.update(self.from_pickle().__dict__)
 
     @pickle_me
     def to_pickle(self):
@@ -1352,6 +1368,281 @@ class Analysis(object):
         for item in g.ax_heatmap.get_yticklabels():
             item.set_rotation(0)
 
+    def interaction_differential_analysis(
+            self, samples, formula="~patient_id * timepoint_name",
+            output_suffix="interaction"):
+        """
+        Discover differential regions for the interaction of patient and treatment.
+        """
+        def diff_score(x):
+            s = np.log2(x["baseMean"]) * abs(x["log2FoldChange"]) * -np.log10(x["pvalue"])
+            return s if s >= 0 else 0
+
+        # Get matrix of counts
+        counts_matrix = self.coverage[[s.name for s in self.samples]]
+
+        # Get experiment matrix
+        experiment_matrix = pd.DataFrame([s.as_series() for sample in self.samples], index=[s.name for sample in self.samples]).fillna("Unknown")
+
+        # Make output dir
+        output_dir = os.path.join(self.results_dir, output_suffix)
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+
+        # Run DESeq2 analysis
+        deseq_table = DESeq_interaction(
+            counts_matrix, experiment_matrix, formula=formula, output_prefix=os.path.join(output_dir, output_suffix), alpha=0.05)
+        deseq_table.columns = deseq_table.columns.str.replace(".", " ")
+        # deseq_table = pd.read_csv(os.path.join(output_dir, output_suffix + ".all_patients.csv"), index_col=0)
+
+        # Compute score and rankings
+        deseq_table['score'] = np.log2(deseq_table["baseMean"]) * abs(deseq_table["log2FoldChange"]) * -np.log10(deseq_table["pvalue"])
+        deseq_table.loc[deseq_table['score'] < 0, 'score'] = 0
+
+        df = self.coverage_qnorm_annotated.join(deseq_table)
+        df.to_csv(os.path.join(output_dir, output_suffix) + ".all_patients.annotated.csv")
+        df = pd.read_csv(os.path.join(output_dir, output_suffix) + ".all_patients.annotated.csv")
+
+        # Extract significant based on p-value and fold-change
+        diff = df[(df["score"] > 2 ** 4)]
+
+        diff = df[
+            (df["baseMean"] > 10) &
+            (abs(df["log2FoldChange"]) > 1) &
+            (df['pvalue'] < 0.05)
+        ]
+
+        if diff.shape[0] < 1:
+            print("No significantly different regions found.")
+            return
+
+        # Statistics of differential regions
+        import string
+        total_sites = float(len(df.index.unique()))
+
+        total_diff = diff.groupby(["patient"])['stat'].count().sort_values(ascending=False)
+        fig, axis = plt.subplots(1)
+        sns.barplot(total_diff.values, total_diff.index, orient="h", ax=axis)
+        for t in axis.get_xticklabels():
+            t.set_rotation(0)
+        sns.despine(fig)
+        fig.savefig(os.path.join(output_dir, "%s.number_differential.total.svg" % output_suffix), bbox_inches="tight")
+        # percentage of total
+        fig, axis = plt.subplots(1)
+        sns.barplot(
+            (total_diff.values / total_sites) * 100,
+            total_diff.index,
+            orient="h", ax=axis)
+        for t in axis.get_xticklabels():
+            t.set_rotation(0)
+        sns.despine(fig)
+        fig.savefig(os.path.join(output_dir, "%s.number_differential.total_percentage.svg" % output_suffix), bbox_inches="tight")
+
+        # direction-dependent
+        diff["direction"] = diff["log2FoldChange"].apply(lambda x: "up" if x >= 0 else "down")
+
+        split_diff = diff.groupby(["patient", "direction"])['stat'].count().sort_values(ascending=False)
+        fig, axis = plt.subplots(1, figsize=(12, 8))
+        sns.barplot(
+            split_diff.values,
+            split_diff.reset_index()[['patient', 'direction']].apply(string.join, axis=1),
+            orient="h", ax=axis)
+        for t in axis.get_xticklabels():
+            t.set_rotation(0)
+        sns.despine(fig)
+        fig.savefig(os.path.join(output_dir, "%s.number_differential.split.svg" % output_suffix), bbox_inches="tight")
+        # percentage of total
+        fig, axis = plt.subplots(1, figsize=(12, 8))
+        sns.barplot(
+            (split_diff.values / total_sites) * 100,
+            split_diff.reset_index()[['patient', 'direction']].apply(string.join, axis=1),
+            orient="h", ax=axis)
+        for t in axis.get_xticklabels():
+            t.set_rotation(0)
+        sns.despine(fig)
+        fig.savefig(os.path.join(output_dir, "%s.number_differential.split_percentage.svg" % output_suffix), bbox_inches="tight")
+
+        # # Pyupset
+        # import pyupset as pyu
+        # # Build dict
+        # diff["comparison_direction"] = diff[["comparison", "direction"]].apply(string.join, axis=1)
+        # df_dict = {group: diff[diff["comparison_direction"] == group].reset_index()[['index']] for group in set(diff["comparison_direction"])}
+        # # Plot
+        # plot = pyu.plot(df_dict, unique_keys=['index'], inters_size_bounds=(10, np.inf))
+        # plot['figure'].set_size_inches(20, 8)
+        # plot['figure'].savefig(os.path.join(output_dir, "%s.%s.number_differential.upset.svg" % (output_suffix, trait)), bbox_inched="tight")
+
+        groups = pd.Series(df['patient'].unique()).sort_values()
+
+        # Score distribution per patient
+        fig, axis = plt.subplots(int(len(groups) / 3.), (3), figsize=(3 * (len(groups) / 3.), 3 * (3)), sharex=True, sharey=True)
+        axis = axis.flatten()
+        for i, patient in enumerate(groups):
+            sns.distplot(np.log2(1 + df[df['patient'] == patient]['score']), kde=False, ax=axis[i])
+            axis[i].set_xlabel(patient)
+        sns.despine(fig)
+        fig.savefig(os.path.join(output_dir, "%s.score_distribution.svg" % output_suffix), bbox_inches="tight")
+
+        # Pairwise scatter plots per patient
+        # norm_counts = pd.read_csv(os.path.join(output_dir, "%s.normalized_counts.csv" % output_suffix))
+        # norm_counts = np.log2(1 + norm_counts)
+
+        fig, axis = plt.subplots(int(len(groups) / 3.), (3), figsize=(4 * (len(groups) / 3.), 4 * (3)), sharex=True, sharey=True)
+        axis = axis.flatten()
+        for i, patient in enumerate(groups):
+            # get samples from patient
+            cond1 = [s.name for s in samples if s.patient_id == patient and s.timepoint_name == "after Ibrutinib"][0]
+            cond2 = [s.name for s in samples if s.patient_id == patient and s.timepoint_name == "before Ibrutinib"][0]
+
+            # Hexbin plot
+            df2 = df[df['patient'] == patient]
+            axis[i].hexbin(df2[cond1], df2[cond2], bins="log", alpha=.85)
+            axis[i].set_xlabel(cond1)
+            # Scatter plot
+            diff2 = diff[diff['patient'] == patient]
+            axis[i].scatter(diff2[cond1], diff2[cond2], alpha=0.1, color="red", s=2)
+            axis[i].set_ylabel(cond2)
+        sns.despine(fig)
+        fig.savefig(os.path.join(output_dir, "%s.scatter_plots.stringent.png" % output_suffix), bbox_inches="tight", dpi=300)
+
+        # Volcano plots
+        fig, axis = plt.subplots(int(len(groups) / 3.), (3), figsize=(3 * (len(groups) / 3.), 3 * (3)), sharex=True, sharey=True)
+        axis = axis.flatten()
+        for i, patient in enumerate(groups):
+            # get samples from patient
+            cond1 = [s.name for s in samples if s.patient_id == patient and s.timepoint_name == "after Ibrutinib"][0]
+            cond2 = [s.name for s in samples if s.patient_id == patient and s.timepoint_name == "before Ibrutinib"][0]
+
+            # Hexbin plot
+            df2 = df[df['patient'] == patient]
+            axis[i].hexbin(df2["log2FoldChange"], -np.log10(df2["pvalue"]), bins="log", alpha=.85)
+            axis[i].set_xlabel(cond1)
+            # Scatter plot
+            diff2 = diff[diff['patient'] == patient]
+            axis[i].scatter(diff2["log2FoldChange"], -np.log10(diff2["pvalue"]), alpha=0.1, color="red", s=2)
+            axis[i].set_ylabel(cond2)
+        sns.despine(fig)
+        fig.savefig(os.path.join(output_dir, "%s.volcano_plots.png" % output_suffix), bbox_inches="tight", dpi=300)
+
+        # MA plots
+        fig, axis = plt.subplots(int(len(groups) / 3.), (3), figsize=(3 * (len(groups) / 3.), 3 * (3)), sharex=True, sharey=True)
+        axis = axis.flatten()
+        for i, patient in enumerate(groups):
+            # get samples from patient
+            cond1 = [s.name for s in samples if s.patient_id == patient and s.timepoint_name == "after Ibrutinib"][0]
+            cond2 = [s.name for s in samples if s.patient_id == patient and s.timepoint_name == "before Ibrutinib"][0]
+
+            # Hexbin plot
+            df2 = df[df['patient'] == patient]
+            axis[i].hexbin(np.log2(df2["baseMean"]), df2["log2FoldChange"], bins="log", alpha=.85)
+            axis[i].set_xlabel(cond1)
+            # Scatter plot
+            diff2 = diff[diff['patient'] == patient]
+            axis[i].scatter(np.log2(diff2["baseMean"]), diff2["log2FoldChange"], alpha=0.1, color="red", s=2)
+            axis[i].set_ylabel(cond2)
+        sns.despine(fig)
+        fig.savefig(os.path.join(output_dir, "%s.ma_plots.png" % output_suffix), bbox_inches="tight", dpi=300)
+
+        # save unique differential regions
+        diff2 = diff.ix[diff.index.unique()].drop_duplicates()
+        diff2.to_csv(os.path.join(output_dir, "%s.differential_regions.csv" % output_suffix))
+
+        # Exploration of differential regions
+        # get unique differential regions
+        df2 = pd.merge(diff2, self.coverage_qnorm_annotated)
+
+        # Characterize regions
+        prefix = "%s.%s.diff_regions" % output_suffix
+        # region's structure
+        # characterize_regions_structure(df=df2, prefix=prefix, output_dir=output_dir)
+        # region's function
+        # characterize_regions_function(df=df2, prefix=prefix, output_dir=output_dir)
+
+        # Heatmaps
+        # Sample level
+        ax = sns.clustermap(df2[[s.name for s in samples]].corr(), xticklabels=False, metric="correlation")
+        for item in ax.ax_heatmap.get_yticklabels():
+            item.set_rotation(0)
+        plt.savefig(os.path.join(output_dir, "%s.diff_regions.samples.clustermap.corr.png" % output_suffix), bbox_inches="tight", dpi=300)
+        plt.close('all')
+
+        ax = sns.clustermap(df2[[s.name for s in samples]], yticklabels=False, metric="correlation")
+        for item in ax.ax_heatmap.get_xticklabels():
+            item.set_rotation(90)
+        plt.savefig(os.path.join(output_dir, "%s.diff_regions.samples.clustermap.png" % output_suffix), bbox_inches="tight", dpi=300)
+        plt.close('all')
+
+        ax = sns.clustermap(df2[[s.name for s in samples]], yticklabels=False, z_score=0, metric="correlation")
+        for item in ax.ax_heatmap.get_xticklabels():
+            item.set_rotation(90)
+        plt.savefig(os.path.join(output_dir, "%s.diff_regions.samples.clustermap.z0.png" % output_suffix), bbox_inches="tight", dpi=300)
+        plt.close('all')
+
+        ax = sns.clustermap(df2[[s.name for s in samples]], yticklabels=False, z_score=0, metric="correlation")
+        for item in ax.ax_heatmap.get_xticklabels():
+            item.set_rotation(90)
+        plt.savefig(os.path.join(output_dir, "%s.diff_regions.samples.clustermap.z0.png" % output_suffix), bbox_inches="tight", dpi=300)
+        plt.close('all')
+
+        # Examine each region cluster
+        region_enr = pd.DataFrame()
+        lola_enr = pd.DataFrame()
+        motif_enr = pd.DataFrame()
+        pathway_enr = pd.DataFrame()
+        for i, patient in enumerate(groups):
+            # Separate in up/down-regulated regions
+            for direction in diff["direction"].unique():
+                comparison_df = self.coverage_qnorm_annotated.ix[diff[
+                    (diff["patient"] == patient) &
+                    (diff["direction"] == direction)
+                ].index]
+                if comparison_df.shape[0] < 1:
+                    continue
+                # Characterize regions
+                prefix = "%s.diff_regions.patient_%s.%s" % (output_suffix, patient, direction)
+
+                patient_dir = os.path.join(output_dir, prefix)
+
+                print("Doing regions of patient %s, with prefix %s" % (patient, prefix))
+
+                # region's structure
+                if not os.path.exists(os.path.join(patient_dir, prefix + "_regions.region_enrichment.csv")):
+                    print(prefix)
+                    characterize_regions_structure(df=comparison_df, prefix=prefix, output_dir=patient_dir)
+                # region's function
+                if not os.path.exists(os.path.join(patient_dir, prefix + "_regions.enrichr.csv")):
+                    print(prefix)
+                    characterize_regions_function(df=comparison_df, prefix=prefix, output_dir=patient_dir)
+
+                # Read/parse enrichment outputs and add to DFs
+                enr = pd.read_csv(os.path.join(patient_dir, prefix + "_regions.region_enrichment.csv"))
+                enr.columns = ["region"] + enr.columns[1:].tolist()
+                enr["patient"] = prefix
+                region_enr = region_enr.append(enr, ignore_index=True)
+
+                enr = pd.read_csv(os.path.join(patient_dir, "allEnrichments.txt"), sep="\t")
+                enr["patient"] = prefix
+                lola_enr = lola_enr.append(enr, ignore_index=True)
+
+                enr = parse_ame(patient_dir).reset_index()
+                enr["patient"] = prefix
+                motif_enr = motif_enr.append(enr, ignore_index=True)
+
+                enr = pd.read_csv(os.path.join(patient_dir, prefix + "_genes.enrichr.csv"))
+                enr["patient"] = prefix
+                pathway_enr = pathway_enr.append(enr, ignore_index=True)
+
+        # write combined enrichments
+        region_enr.to_csv(
+            os.path.join(output_dir, "%s.diff_regions.regions.csv" % (output_suffix)), index=False)
+        lola_enr.to_csv(
+            os.path.join(output_dir, "%s.diff_regions.lola.csv" % (output_suffix)), index=False)
+        motif_enr.columns = ["motif", "p_value", "comparison"]
+        motif_enr.to_csv(
+            os.path.join(output_dir, "%s.diff_regions.motifs.csv" % (output_suffix)), index=False)
+        pathway_enr.to_csv(
+            os.path.join(output_dir, "%s.diff_regions.enrichr.csv" % (output_suffix)), index=False)
+
 
 def pharmacoscopy(analysis):
     """
@@ -2045,7 +2336,7 @@ def DESeq_analysis(counts_matrix, experiment_matrix, variable, covariates, outpu
             library(DESeq2)
 
             alpha = 0.05
-            output_prefix = "ibrutinib_treatment" # "patient_specific"
+            output_prefix = "results/ibrutinib_treatment/ibrutinib_treatment" # "patient_specific"
             countData = read.csv("counts_matrix.csv", sep=",", row.names=1)
             colData = read.csv("experiment_matrix.csv", sep=",")
 
@@ -2058,8 +2349,8 @@ def DESeq_analysis(counts_matrix, experiment_matrix, variable, covariates, outpu
                 countData = countData, colData = colData,
                 design)
 
-            dds <- DESeq(dds)
-            save(dds, file=paste0("results/", output_prefix, ".deseq_dds_object.Rdata"))
+            dds <- DESeq(dds, parallel=TRUE)
+            save(dds, file=paste0(output_prefix, ".deseq_dds_object.Rdata"))
             # load("deseq_gene_expresion.deseq_dds_object.Rdata")
 
             # Get group means
@@ -2076,7 +2367,7 @@ def DESeq_analysis(counts_matrix, experiment_matrix, variable, covariates, outpu
                 function(lvl) rowMeans(counts(dds, normalized=TRUE)[, colData[, variable] == lvl])
             )
             group_means = cbind(single_levels_values, multiple_levels_values)
-            write.table(group_means, paste0("results/", output_prefix, ".", variable, ".group_means.csv"), sep=",")
+            write.table(group_means, paste0(output_prefix, ".", variable, ".group_means.csv"), sep=",")
 
             # pairwise combinations
             combs = combn(sort(unique(colData[, variable]), descending=FALSE), 2)
@@ -2100,7 +2391,7 @@ def DESeq_analysis(counts_matrix, experiment_matrix, variable, covariates, outpu
 
                 # append to results
                 comparison_name = paste(cond1, cond2, sep="-")
-                output_name = paste0("results/", output_prefix, ".", variable, ".", comparison_name, ".csv")
+                output_name = paste0(output_prefix, ".", variable, ".", comparison_name, ".csv")
                 res["comparison"] = comparison_name
 
                 # coherce to character
@@ -2138,6 +2429,76 @@ def DESeq_analysis(counts_matrix, experiment_matrix, variable, covariates, outpu
 
     # save all
     results.to_csv(os.path.join(output_prefix + ".%s.csv" % variable), index=True)
+
+    # return
+    return results
+
+
+def DESeq_interaction(counts_matrix, experiment_matrix, formula, output_prefix, alpha=0.05):
+    """
+    """
+    import rpy2.robjects as robj
+    from rpy2.robjects import pandas2ri
+    pandas2ri.activate()
+
+    run = robj.r("""
+        run = function(countData, colData, formula, output_prefix, alpha) {
+            library(DESeq2)
+
+            design = as.formula(formula)
+
+            dds <- DESeqDataSetFromMatrix(
+                countData = countData, colData = colData,
+                design)
+            dds <- DESeq(dds, parallel=TRUE)
+            save(dds, file=paste0(output_prefix, ".interaction.deseq_dds_object.Rdata"))
+
+            # Save DESeq-normalized counts
+            normalized_counts = counts(dds, normalized=TRUE)
+            colnames(normalized_counts) = colData$sample_name
+            output_name = paste0(output_prefix, ".interaction.normalized_counts.csv")
+            write.table(normalized_counts, output_name, sep=",")
+
+            # keep track of output files
+            result_files = list()
+
+            # Get timepoint-specific regions for each patient specifically
+            for (patient in unique(colData$patient_id)[2:length(unique(colData$patient_id))]){
+                print(patient)
+                cond1 = paste0("patient_id", patient, ".timepoint_nameafter.Ibrutinib")
+                cond2 = paste0("patient_id", patient, ".timepoint_namebefore.Ibrutinib")
+                contrast = list(cond1, cond2)
+                res <- results(dds, contrast=contrast, alpha=alpha, independentFiltering=FALSE, parallel=TRUE)
+                res <- as.data.frame(res)
+                res["patient"] = patient
+                output_name = paste0(output_prefix, ".interaction.", patient, ".csv")
+                write.table(res, output_name, sep=",")
+            }
+        return(result_files)
+        }
+    """)
+
+    # replace names
+    counts_matrix.columns = ["S" + str(i) for i in range(len(counts_matrix.columns))]
+    experiment_matrix.index = ["S" + str(i) for i in range(len(experiment_matrix.index))]
+    experiment_matrix.index.name = "sample"
+
+    # save to disk just in case
+    counts_matrix.to_csv(os.path.join(os.path.dirname(output_prefix), "counts_matrix.csv"), index=True)
+    experiment_matrix.to_csv(os.path.join(os.path.dirname(output_prefix), "experiment_matrix.csv"), index=True)
+
+    result_files = run(counts_matrix, experiment_matrix, formula, output_prefix, alpha)
+
+    # concatenate all files
+    results = pd.DataFrame()
+    for result_file in result_files:
+        df = pd.read_csv("results/interaction/" + result_file[17:])
+        df['patient'] = result_file[29:][:-4]
+        # df.index = counts_matrix.index  # not actually needed, as it reads from file
+        results = results.append(df)
+
+    # save all
+    results.to_csv(os.path.join(output_prefix + ".all_patients.csv"), index=True)
 
     # return
     return results
@@ -2571,12 +2932,7 @@ def main():
     prj.samples = annotate_samples(prj.samples, prj.sheet.df.columns.tolist())
 
     # Start analysis object
-    analysis = Analysis(
-        data_dir=os.path.join(".", "data"),
-        results_dir=os.path.join(".", "results"),
-        samples=prj.samples,
-        pickle_file=os.path.join(".", "data", "analysis.pickle")
-    )
+    analysis = Analysis(from_pickle=not args.generate)
     # pair analysis and Project
     analysis.prj = prj
 
