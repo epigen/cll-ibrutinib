@@ -1647,11 +1647,12 @@ class Analysis(object):
 def pharmacoscopy(analysis):
     """
     """
+    import string
     from mpl_toolkits.axes_grid1.inset_locator import zoomed_inset_axes
     from scipy.stats import mannwhitneyu, ks_2samp, ttest_ind
     from statsmodels.sandbox.stats.multicomp import multipletests
 
-    def annotate_drugs():
+    def annotate_drugs(sensitivity):
         """
         """
         rename = {
@@ -1684,6 +1685,29 @@ def pharmacoscopy(analysis):
         # Tight match
         annot = pd.merge(annot, dgidb, on="name_lower", how="left")
         annot.to_csv(os.path.join(analysis.data_dir, "drugs_annotated.csv"), index=False)
+
+        # Cleanup (reduce redudancy of some)
+        annot = annot.replace("n/a", pd.np.nan)
+        annot = annot.replace("other/unknown", pd.np.nan)
+
+        # Create directed network
+        net = annot[['drug', 'interaction_types', 'entrez_gene_symbol']].drop_duplicates()
+        net = (
+            net.groupby(['drug', 'entrez_gene_symbol'])
+            ['interaction_types']
+            .apply(lambda x: pd.Series([i for i in x if not pd.isnull(i)] if not pd.isnull(x).all() else pd.np.nan))
+            .reset_index()
+        )[['drug', 'interaction_types', 'entrez_gene_symbol']]
+        net.to_csv(os.path.join(analysis.data_dir, "pharmacoscopy.drug-gene_interactions.tsv"), sep='\t', index=False)
+
+        # collapse it to one row per drug (one classification per drug)
+        interactions = (
+            net.groupby(['drug'])['interaction_types']
+            .apply(lambda x: x.value_counts().argmax() if not pd.isnull(x).all() else pd.np.nan))
+        genes = net.groupby(['drug'])['entrez_gene_symbol'].aggregate(string.join)
+        collapsed_net = pd.DataFrame([genes, interactions]).T.reset_index()
+        collapsed_net[['drug', 'interaction_types', 'entrez_gene_symbol']].to_csv(
+            os.path.join(analysis.data_dir, "pharmacoscopy.drug-gene_interactions.reduced_to_drug.tsv"), sep='\t', index=False)
 
         # alchemy -> annotate patways
 
@@ -1751,6 +1775,8 @@ def pharmacoscopy(analysis):
         sns.despine(fig)
         fig.savefig(os.path.join(analysis.data_dir, "drugs_annotations.svg"), bbox_inches="tight")
 
+        return annot
+
     #
     output_dir = os.path.join(analysis.results_dir, "pharmacoscopy")
     if not os.path.exists(output_dir):
@@ -1760,6 +1786,12 @@ def pharmacoscopy(analysis):
     cd19 = pd.read_csv(os.path.join(analysis.data_dir, "pharmacoscopy_cd19.csv"))
     auc = pd.read_csv(os.path.join(analysis.data_dir, "pharmacoscopy_AUC.csv"))
     sensitivity = pd.read_csv(os.path.join(analysis.data_dir, "pharmacoscopy_sensitivity.csv"))
+
+    # Annotate drugs
+    annot = annotate_drugs(sensitivity)
+    annot = pd.read_csv(os.path.join(analysis.data_dir, "drugs_annotated.csv"))
+    sensitivity = pd.merge(sensitivity, annot, on='drug', how='left')
+    auc = pd.merge(auc, annot, on='drug', how='left')
 
     # transform AUC to inverse
     auc["AUC"] *= -1
@@ -1772,7 +1804,7 @@ def pharmacoscopy(analysis):
     axis = axis.flatten()
     # axis[0].set_title("original sensitivity")
     sns.distplot(sensitivity['sensitivity'], bins=100, kde=False, ax=axis[0], label="original sensitivity")
-    ax = zoomed_inset_axes(axis[0], zoom=3, loc=1, axes_kwargs={"aspect": "auto", "xlim": (-5, 5), "ylim": (0, 3500)})
+    ax = zoomed_inset_axes(axis[0], zoom=6, loc=1, axes_kwargs={"aspect": "auto", "xlim": (-2, 5), "ylim": (0, 100000)})
     sns.distplot(sensitivity['sensitivity'], bins=300, kde=False, ax=ax)
     axis[0].legend()
     # axis[1].set_title("scaled sensitivity")
