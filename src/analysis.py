@@ -61,6 +61,10 @@ class Analysis(object):
         self.samples = samples
         self.pickle_file = pickle_file
 
+        for directory in [self.data_dir, self.results_dir]:
+            if not os.path.exists(directory):
+                os.makedirs(directory)
+
         # parse remaining kwargs
         self.__dict__.update(kwargs)
 
@@ -3314,30 +3318,29 @@ def main():
     parser = add_args(parser)
     args = parser.parse_args()
 
-    # Start project
-    prj = Project("metadata/project_config.yaml")
-    prj.add_sample_sheet()
-    # temporary:
-    for sample in prj.samples:
-        sample.peaks = os.path.join(sample.paths.sample_root, "peaks", sample.name + "_peaks.narrowPeak")
-        sample.summits = os.path.join(sample.paths.sample_root, "peaks", sample.name + "_summits.bed")
-        sample.mapped = os.path.join(sample.paths.sample_root, "mapped", sample.name + ".trimmed.bowtie2.bam")
-        sample.filtered = os.path.join(sample.paths.sample_root, "mapped", sample.name + ".trimmed.bowtie2.filtered.bam")
-        sample.coverage = os.path.join(sample.paths.sample_root, "coverage", sample.name + ".cov")
-
-    # Only pass_qc samples
-    prj.samples = [s for s in prj.samples if s.pass_qc and s.ibrutinib_cohort]
-
-    # annotated samples with a few more things:
-    prj.samples = annotate_samples(prj.samples, prj.sheet.df.columns.tolist())
-
     # Start analysis object
     analysis = Analysis(from_pickle=not args.generate)
-    # pair analysis and Project
-    analysis.prj = prj
 
-    # GET CONSENSUS PEAK SET, ANNOTATE IT, PLOT FEATURES
     if args.generate:
+        # Start project
+        prj = Project("metadata/project_config.yaml")
+        prj.add_sample_sheet()
+        # temporary:
+        for sample in prj.samples:
+            sample.peaks = os.path.join(sample.paths.sample_root, "peaks", sample.name + "_peaks.narrowPeak")
+            sample.summits = os.path.join(sample.paths.sample_root, "peaks", sample.name + "_summits.bed")
+            sample.mapped = os.path.join(sample.paths.sample_root, "mapped", sample.name + ".trimmed.bowtie2.bam")
+            sample.filtered = os.path.join(sample.paths.sample_root, "mapped", sample.name + ".trimmed.bowtie2.filtered.bam")
+            sample.coverage = os.path.join(sample.paths.sample_root, "coverage", sample.name + ".cov")
+        # Only pass_qc samples
+        prj.samples = [s for s in prj.samples if s.pass_qc and s.ibrutinib_cohort]
+        # annotated samples with a few more things:
+        prj.samples = annotate_samples(prj.samples, prj.sheet.df.columns.tolist())
+        # pair analysis and Project
+        analysis.prj = prj
+        analysis.samples = prj.samples
+
+        # GET CONSENSUS PEAK SET, ANNOTATE IT, PLOT
         # Get consensus peak set from all samples
         analysis.get_consensus_sites(analysis.samples)
         analysis.calculate_peak_support(analysis.samples)
@@ -3356,6 +3359,13 @@ def main():
         # Annotate peaks with closest gene, chromatin state,
         # genomic location, mean and variance measurements across samples
         analysis.annotate(analysis.samples)
+
+        # Plots
+        # plot general peak set features
+        analysis.plot_peak_characteristics()
+        # Plot coverage features across peaks/samples
+        analysis.plot_coverage()
+        analysis.plot_variance()
     else:
         analysis.sites = pybedtools.BedTool(os.path.join(analysis.results_dir, "cll-ibrutinib_peaks.bed"))
         analysis.gene_annotation = pd.read_csv(os.path.join(analysis.results_dir, "cll-ibrutinib_peaks.gene_annotation.csv"))
@@ -3367,13 +3377,6 @@ def main():
         analysis.coverage = pd.read_csv(os.path.join(analysis.results_dir, "cll-ibrutinib_peaks.raw_coverage.tsv"), sep="\t", index_col=0)
         analysis.coverage_qnorm = pd.read_csv(os.path.join(analysis.results_dir, "cll-ibrutinib_peaks.coverage_qnorm.log2.tsv"), sep="\t", index_col=0)
         analysis.coverage_qnorm_annotated = pd.read_csv(os.path.join(analysis.results_dir, "cll-ibrutinib_peaks.coverage_qnorm.log2.annotated.tsv"), sep="\t", index_col=0)
-
-    # Plots
-    # plot general peak set features
-    analysis.plot_peak_characteristics()
-    # Plot rpkm features across peaks/samples
-    analysis.plot_coverage()
-    analysis.plot_variance()
 
     # Unsupervised analysis
     analysis.unsupervised(analysis.samples)
