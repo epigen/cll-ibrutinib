@@ -2168,8 +2168,8 @@ def pharmacoscopy(analysis):
 
         pathway_scores = multiply(vector=drug_vector, matrix=pathway_matrix)
 
-        pathway_vector = pathway_scores.sum(axis=0)
-        new_drug_space = pathway_scores.sum(axis=1)
+        pathway_vector = abs(pathway_scores).mean(axis=0)
+        new_drug_space = abs(pathway_scores).mean(axis=1)
 
         return pathway_vector, new_drug_space
 
@@ -2418,14 +2418,14 @@ def pharmacoscopy(analysis):
     # Convert each sample to pathway-space
     pathway_space = pd.DataFrame()
     new_drugs = pd.DataFrame()
-    for patient_id in sensitivity['patient_id'].drop_duplicates().sort_values():
+    for original_patient_id in sensitivity['original_patient_id'].drop_duplicates().sort_values():
         for timepoint in sensitivity['timepoint'].drop_duplicates().sort_values(ascending=False):
             for concentration in sensitivity['concentration'].drop_duplicates().sort_values():
-                print(patient_id, timepoint, concentration)
+                print(original_patient_id, timepoint, concentration)
                 # get respective data and reduce replicates (by mean)
                 drug_vector = sensitivity.loc[
                     (
-                        (sensitivity['patient_id'] == patient_id) &
+                        (sensitivity['original_patient_id'] == original_patient_id) &
                         (sensitivity['timepoint'] == timepoint) &
                         (sensitivity['concentration'] == concentration)),
                     ['drug', 'sensitivity']].groupby('drug').mean().squeeze()
@@ -2436,11 +2436,144 @@ def pharmacoscopy(analysis):
                     drug_annotation=analysis.drug_annotation)
 
                 # save
-                sample_id = "-".join([patient_id, timepoint, str(concentration)])
+                sample_id = "-".join([original_patient_id, timepoint, str(concentration)])
                 pathway_space[sample_id] = pathway_vector
                 new_drugs[sample_id] = new_drug_space
     pathway_space.to_csv(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.csv"))
     new_drugs.to_csv(os.path.join(output_dir, "pharmacoscopy.sensitivity.new_drug_space.csv"))
+
+    # Plots
+
+    # evaluate "performance"
+    # (similarity between measured and new drug sensitivities)
+    s = pd.Series(new_drugs.columns).apply(lambda x: pd.Series(x.split("-")))
+    s.index = new_drugs.columns
+    s.columns = [['patient_id', 'timepoint', 'concentration']]
+    new_drug_space = new_drugs.T.join(s)
+
+    fig, axis = plt.subplots(
+        6, 4,
+        # len(sensitivity['timepoint'].drop_duplicates()),
+        # len(sensitivity['original_patient_id'].drop_duplicates()),
+        figsize=(11, 14),
+        sharex=False, sharey=False
+    )
+    axis = axis.flatten()
+    i = 0
+    for original_patient_id in sensitivity['original_patient_id'].drop_duplicates().sort_values():
+        for timepoint in sensitivity['timepoint'].drop_duplicates().sort_values(ascending=False):
+            for concentration in sensitivity['concentration'].drop_duplicates().sort_values():
+                print(original_patient_id, timepoint, concentration)
+
+                original_drug = sensitivity.loc[
+                    (
+                        (sensitivity['original_patient_id'] == original_patient_id) &
+                        (sensitivity['timepoint'] == timepoint) &
+                        (sensitivity['concentration'] == concentration)), ["drug", "sensitivity"]].groupby('drug').mean().squeeze()
+                new_drug = new_drug_space.loc[
+                    (
+                        (new_drug_space['patient_id'] == original_patient_id) &
+                        (new_drug_space['timepoint'] == timepoint) &
+                        (new_drug_space['concentration'].astype(np.int64) == concentration)), :].squeeze().drop(['patient_id', 'timepoint', 'concentration'])
+                p = pd.DataFrame([original_drug, new_drug], index=['original', 'engineered']).T.dropna()
+                axis[i].scatter(np.log2(1 + abs(p['original'])), np.log2(1 + abs(p['engineered'])), color="blue" if concentration == 1 else "green", alpha=0.3)
+            axis[i].set_title(" ".join([original_patient_id, timepoint]))
+            i += 1
+    fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.measured_vs_predicted.scatter.svg"), bbox_inches='tight')
+
+    # vizualize in heatmaps
+    fig = sns.clustermap(pathway_space[pathway_space.sum(1) != 0].T, figsize=(20, 8))
+    for tick in fig.ax_heatmap.get_xticklabels():
+        tick.set_rotation(90)
+    for tick in fig.ax_heatmap.get_yticklabels():
+        tick.set_rotation(0)
+    fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.svg"), bbox_inches='tight')
+    fig = sns.clustermap(pathway_space[pathway_space.sum(1) != 0].T, figsize=(20, 8), z_score=1)
+    for tick in fig.ax_heatmap.get_xticklabels():
+        tick.set_rotation(90)
+    for tick in fig.ax_heatmap.get_yticklabels():
+        tick.set_rotation(0)
+    fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.z_score.svg"), bbox_inches='tight')
+    fig = sns.clustermap(new_drugs.T, figsize=(20, 8))
+    for tick in fig.ax_heatmap.get_xticklabels():
+        tick.set_rotation(90)
+    for tick in fig.ax_heatmap.get_yticklabels():
+        tick.set_rotation(0)
+    fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.new_drugs.svg"), bbox_inches='tight')
+    fig = sns.clustermap(new_drugs.T, figsize=(20, 8), z_score=0)
+    for tick in fig.ax_heatmap.get_xticklabels():
+        tick.set_rotation(90)
+    for tick in fig.ax_heatmap.get_yticklabels():
+        tick.set_rotation(0)
+    fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.new_drugs.z_score.svg"), bbox_inches='tight')
+
+    # Reduce to mean of concentrations
+    s = pd.Series(pathway_space.columns).apply(lambda x: pd.Series(x.split("-")))
+    s.index = pathway_space.columns
+    s.columns = [['patient_id', 'timepoint', 'concentration']]
+    pathway_space2 = pathway_space.T.join(s).groupby(['patient_id', 'timepoint']).mean()
+    s = pd.Series(new_drugs.columns).apply(lambda x: pd.Series(x.split("-")))
+    s.index = new_drugs.columns
+    s.columns = [['patient_id', 'timepoint', 'concentration']]
+    new_drugs2 = new_drugs.T.join(s).groupby(['patient_id', 'timepoint']).mean()
+
+    # vizualize in heatmaps
+    fig = sns.clustermap(pathway_space2.T[pathway_space2.sum(0) != 0].T, figsize=(20, 8))
+    for tick in fig.ax_heatmap.get_xticklabels():
+        tick.set_rotation(90)
+    for tick in fig.ax_heatmap.get_yticklabels():
+        tick.set_rotation(0)
+    fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.mean_concentrations.svg"), bbox_inches='tight')
+    fig = sns.clustermap(pathway_space2.T[pathway_space2.sum(0) != 0].T, figsize=(20, 8), z_score=1)
+    for tick in fig.ax_heatmap.get_xticklabels():
+        tick.set_rotation(90)
+    for tick in fig.ax_heatmap.get_yticklabels():
+        tick.set_rotation(0)
+    fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.mean_concentrations.z_score.svg"), bbox_inches='tight')
+    fig = sns.clustermap(new_drugs2, figsize=(20, 8))
+    for tick in fig.ax_heatmap.get_xticklabels():
+        tick.set_rotation(90)
+    for tick in fig.ax_heatmap.get_yticklabels():
+        tick.set_rotation(0)
+    fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.new_drugs.mean_concentrations.svg"), bbox_inches='tight')
+    fig = sns.clustermap(new_drugs2.T[new_drugs2.sum(0) != 0].T, figsize=(20, 8), z_score=1)
+    for tick in fig.ax_heatmap.get_xticklabels():
+        tick.set_rotation(90)
+    for tick in fig.ax_heatmap.get_yticklabels():
+        tick.set_rotation(0)
+    fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.new_drugs.mean_concentrations.z_score.svg"), bbox_inches='tight')
+
+    # Calculate fold-changes
+    pathway_space3 = pathway_space2.reset_index(1)
+    pathway_space3 = pathway_space3[pathway_space3['timepoint'] == "post"].drop('timepoint', axis=1) - pathway_space3[pathway_space3['timepoint'] == "pre"].drop('timepoint', axis=1)
+    new_drugs3 = new_drugs2.reset_index(1)
+    new_drugs3 = new_drugs3[new_drugs3['timepoint'] == "post"].drop('timepoint', axis=1) - new_drugs3[new_drugs3['timepoint'] == "pre"].drop('timepoint', axis=1)
+
+    # vizualize in heatmaps
+    fig = sns.clustermap(pathway_space3.T[pathway_space3.sum(0) != 0].T, figsize=(20, 8))
+    for tick in fig.ax_heatmap.get_xticklabels():
+        tick.set_rotation(90)
+    for tick in fig.ax_heatmap.get_yticklabels():
+        tick.set_rotation(0)
+    fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.mean_concentrations.timepoint_fold_change.svg"), bbox_inches='tight')
+    fig = sns.clustermap(pathway_space3.T[pathway_space3.sum(0) != 0].T, figsize=(20, 8), z_score=1)
+    for tick in fig.ax_heatmap.get_xticklabels():
+        tick.set_rotation(90)
+    for tick in fig.ax_heatmap.get_yticklabels():
+        tick.set_rotation(0)
+    fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.mean_concentrations.timepoint_fold_change.z_score.svg"), bbox_inches='tight')
+    fig = sns.clustermap(new_drugs3, figsize=(20, 8))
+    for tick in fig.ax_heatmap.get_xticklabels():
+        tick.set_rotation(90)
+    for tick in fig.ax_heatmap.get_yticklabels():
+        tick.set_rotation(0)
+    fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.new_drugs.mean_concentrations.timepoint_fold_change.svg"), bbox_inches='tight')
+    fig = sns.clustermap(new_drugs3.T[new_drugs3.sum(0) != 0].T, figsize=(20, 8), z_score=1)
+    for tick in fig.ax_heatmap.get_xticklabels():
+        tick.set_rotation(90)
+    for tick in fig.ax_heatmap.get_yticklabels():
+        tick.set_rotation(0)
+    fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.new_drugs.mean_concentrations.timepoint_fold_change.z_score.svg"), bbox_inches='tight')
 
 
 def add_args(parser):
