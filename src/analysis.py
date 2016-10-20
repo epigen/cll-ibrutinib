@@ -1846,236 +1846,318 @@ class Analysis(object):
             fig.savefig(os.path.join(output_dir, "enrichr.%s.cluster_specific.png" % gene_set_library), bbox_inches="tight", dpi=300)
 
 
+def annotate_drugs(analysis, sensitivity):
+    """
+    """
+    from bioservices.kegg import KEGG
+    from collections import defaultdict
+    import string
+    from mpl_toolkits.axes_grid1.inset_locator import zoomed_inset_axes
+
+    output_dir = os.path.join(analysis.results_dir, "pharmacoscopy")
+
+    sensitivity = pd.read_csv(os.path.join(analysis.data_dir, "pharmacoscopy_sensitivity.csv"))
+    rename = {
+        "ABT-199 = Venetoclax": "ABT-199",
+        "ABT-263 = Navitoclax": "ABT-263",
+        "ABT-869 = Linifanib": "ABT-869",
+        "AC220 = Quizartinib": "AC220",
+        "Buparlisib (BKM120)": "BKM120",
+        "EGCG = Epigallocatechin gallate": "Epigallocatechin gallate",
+        "JQ1": "(+)-JQ1",
+        "MLN-518 = Tandutinib": "MLN-518",
+        "Selinexor (KPT-330)": "KPT-330"}
+    sensitivity["proper_name"] = sensitivity["drug"]
+    for p, n in rename.items():
+        sensitivity["proper_name"] = sensitivity["proper_name"].replace(p, n)
+
+    # CLOUD id/ SMILES
+    cloud = pd.read_csv(os.path.join("data", "CLOUD_simple_annotation.csv"))
+    cloud.loc[:, "name_lower"] = cloud["drug_name"].str.lower()
+    sensitivity.loc[:, "name_lower"] = sensitivity["proper_name"].str.lower()
+    annot = pd.merge(sensitivity[['drug', 'proper_name', 'name_lower']].drop_duplicates(), cloud, on="name_lower", how="left")
+
+    # DGIdb: drug -> genes
+    interact = pd.read_csv("http://dgidb.genome.wustl.edu/downloads/interactions.tsv", sep="\t")
+    interact.loc[:, "name_lower"] = interact["drug_primary_name"].str.lower()
+    cats = pd.read_csv("http://dgidb.genome.wustl.edu/downloads/categories.tsv", sep="\t")
+    dgidb = pd.merge(interact, cats, how="left")
+    dgidb.to_csv(os.path.join(output_dir, "dgidb.interactions_categories.csv"), index=False)
+    # tight match
+    annot = pd.merge(annot, dgidb, on="name_lower", how="left")
+    annot.to_csv(os.path.join(output_dir, "drugs_annotated.csv"), index=False)
+
+    # KEGG: gene -> pathways
+    k = KEGG()
+    k.organism = "hsa"
+    paths = pd.DataFrame()
+    for gene in annot['entrez_gene_symbol'].drop_duplicates().dropna().sort_values():
+        print(gene)
+        try:
+            s = pd.Series(k.get_pathway_by_gene(gene, "hsa"))
+        except AttributeError:
+            continue
+        # if not s.isnull().all():
+        s = s.reset_index()
+        s['gene'] = gene
+        paths = paths.append(s)
+    paths.columns = ['kegg_pathway_id', 'kegg_pathway_name', 'entrez_gene_symbol']
+    paths = paths.sort_values(['entrez_gene_symbol', 'kegg_pathway_name'])
+    # match
+    annot = pd.merge(annot, paths, on="entrez_gene_symbol", how="left")
+    annot.to_csv(os.path.join(output_dir, "drugs_annotated.csv"), index=False)
+
+    # Cleanup (reduce redudancy of some)
+    annot = annot.replace("n/a", pd.np.nan)
+    annot = annot.replace("other/unknown", pd.np.nan)
+
+    # Score interactions
+    # values as direction of interaction
+    score_map = defaultdict(lambda: 0)
+    score_map.update({
+        'inducer': 1,
+        'partial agonist': 1,
+        'agonist': 1,
+        'ligand': 0,
+        'binder': 0,
+        'multitarget': 0,
+        'adduct': 0,
+        'inhibitor': -1,
+        'antagonist': -1,
+        'negative modulator': -1,
+        'competitive,inhibitor': -1,
+        'inhibitor,competitive': -1,
+        'multitarget,antagonist': -1,
+        'blocker': -1,
+    })
+    # score interactions
+    annot['interaction_score'] = annot['interaction_types'].apply(lambda x: score_map[x])
+    annot.to_csv(os.path.join(output_dir, "drugs_annotated.csv"), index=False)
+    analysis.drug_annotation = annot
+
+    # Create directed Drug -> Gene network
+    gene_net = annot[['drug', 'interaction_types', 'entrez_gene_symbol']].drop_duplicates()
+    gene_net = (
+        gene_net.groupby(['drug', 'entrez_gene_symbol'])
+        ['interaction_types']
+        .apply(lambda x: pd.Series([i for i in x if not pd.isnull(i)] if not pd.isnull(x).all() else pd.np.nan))
+        .reset_index()
+    )[['drug', 'interaction_types', 'entrez_gene_symbol']]
+    # score interactions
+    gene_net['interaction_score'] = gene_net['interaction_types'].apply(lambda x: score_map[x])
+    gene_net.to_csv(os.path.join(output_dir, "pharmacoscopy.drug-gene_interactions.tsv"), sep='\t', index=False)
+    # collapse annotation to one row per drug (one classification per drug)
+    interactions = (
+        gene_net.groupby(['drug'])['interaction_types']
+        .apply(lambda x: x.value_counts().argmax() if not pd.isnull(x).all() else pd.np.nan))
+    genes = gene_net.groupby(['drug'])['entrez_gene_symbol'].aggregate(string.join, sep=";")
+    collapsed_net = pd.DataFrame([genes, interactions]).T.reset_index()
+    collapsed_net[['drug', 'interaction_types', 'entrez_gene_symbol']].to_csv(
+        os.path.join(output_dir, "pharmacoscopy.drug-gene_interactions.reduced_to_drug.tsv"), sep='\t', index=False)
+
+    # Create directed Drug -> Pathway network
+    path_net = annot[['drug', 'interaction_types', 'kegg_pathway_name']].drop_duplicates()
+    path_net = (
+        path_net.groupby(['drug', 'kegg_pathway_name'])
+        ['interaction_types']
+        .apply(lambda x: pd.Series([i for i in x if not pd.isnull(i)] if not pd.isnull(x).all() else pd.np.nan))
+        .reset_index()
+    )[['drug', 'interaction_types', 'kegg_pathway_name']]
+    # score interactions
+    path_net['interaction_score'] = path_net['interaction_types'].apply(lambda x: score_map[x])
+    path_net.to_csv(os.path.join(output_dir, "pharmacoscopy.drug-pathway_interactions.tsv"), sep='\t', index=False)
+    # collapse annotation to one row per drug (one classification per drug)
+    interactions = (
+        path_net.groupby(['drug'])['interaction_types']
+        .apply(lambda x: x.value_counts().argmax() if not pd.isnull(x).all() else pd.np.nan))
+    genes = path_net.groupby(['drug'])['kegg_pathway_name'].aggregate(string.join, sep=";")
+    collapsed_net = pd.DataFrame([genes, interactions]).T.reset_index()
+    collapsed_net[['drug', 'interaction_types', 'kegg_pathway_name']].to_csv(
+        os.path.join(output_dir, "pharmacoscopy.drug-pathway_interactions.reduced_to_drug.tsv"), sep='\t', index=False)
+
+    # Plot annotations
+
+    # distributions of drug-gene annotations
+    fig, axis = plt.subplots(2, 3, figsize=(12, 8))
+    axis = axis.flatten()
+
+    # how many genes per drug?
+    axis[0].set_title("Genes per drug")
+    mats0 = annot.groupby(["proper_name"])['entrez_gene_symbol'].nunique()
+    mats0_a = dgidb.groupby(["drug_primary_name"])['entrez_gene_symbol'].nunique()
+    axis[0].hist([mats0, mats0_a], max(mats0.tolist() + mats0_a.tolist()), normed=True, histtype='bar', align='mid', alpha=0.8)
+    axis[0].set_xlabel("Genes")
+
+    ax = zoomed_inset_axes(axis[0], 3, loc=1, axes_kwargs={"xlim": (0, 30), "ylim": (0, .20)})
+    ax.hist([mats0, mats0_a], max(mats0.tolist() + mats0_a.tolist()), normed=True, histtype='bar', align='mid', alpha=0.8)
+
+    # support of each drug-> gene assignment
+    axis[1].set_title("Support of each interaction")
+    mats1 = annot.groupby(["proper_name", "entrez_gene_symbol"])['interaction_claim_source'].nunique()
+    mats1_a = dgidb.groupby(["drug_primary_name", "entrez_gene_symbol"])['interaction_claim_source'].nunique()
+    axis[1].hist([mats1, mats1_a], max(mats1.tolist() + mats1_a.tolist()), normed=True, histtype='bar', align='mid', alpha=0.8)
+    axis[1].set_xlabel("Sources")
+
+    # types of interactions per drug (across genes)
+    axis[2].set_title("Interaction types per drug")
+    mats2 = annot.groupby(["proper_name"])['interaction_types'].nunique()
+    mats2_a = dgidb.groupby(["drug_primary_name"])['interaction_types'].nunique()
+    axis[2].hist([mats2, mats2_a], max(mats2.tolist() + mats2_a.tolist()), normed=True, histtype='bar', align='mid', alpha=0.8)
+    axis[2].set_xlabel("Interaction types")
+
+    # types of interactions per drug-> assignemnt
+    axis[3].set_title("Interactions types per drug->gene interaction")
+    mats3 = annot.groupby(["proper_name", "entrez_gene_symbol"])['interaction_types'].nunique()
+    mats3_a = dgidb.groupby(["drug_primary_name", "entrez_gene_symbol"])['interaction_types'].nunique()
+    axis[3].hist([mats3, mats3_a], max(mats3.tolist() + mats3_a.tolist()), normed=True, histtype='bar', align='mid', alpha=0.8)
+    axis[3].set_xlabel("Interaction types")
+
+    # types of categories per drug (across genes)
+    axis[4].set_title("Categories per drug")
+    mats4 = annot.groupby(["proper_name"])['interaction_types'].nunique()
+    mats4_a = dgidb.groupby(["drug_primary_name"])['interaction_types'].nunique()
+    axis[4].hist([mats4, mats4_a], max(mats4.tolist() + mats4_a.tolist()), normed=True, histtype='bar', align='mid', alpha=0.8)
+    axis[4].set_xlabel("Categories")
+
+    # types of categories per drug-> assignemnt
+    axis[5].set_title("Categories per drug->gene interaction")
+    mats5 = annot.groupby(["proper_name", "entrez_gene_symbol"])['interaction_types'].nunique()
+    mats5_a = dgidb.groupby(["drug_primary_name", "entrez_gene_symbol"])['interaction_types'].nunique()
+    axis[5].hist([mats5, mats5_a], max(mats5.tolist() + mats5_a.tolist()), normed=True, histtype='bar', align='mid', alpha=0.8)
+    axis[5].set_xlabel("Categories")
+
+    sns.despine(fig)
+    fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-gene.annotations.svg"), bbox_inches="tight")
+
+    # distributions of drug-pathway annotations
+    fig, axis = plt.subplots(2, 3, figsize=(12, 8))
+    axis = axis.flatten()
+
+    # how many genes per drug?
+    axis[0].set_title("Pathways per drug")
+    mats0 = annot.groupby(["proper_name"])['kegg_pathway_name'].nunique()
+    sns.distplot(mats0, hist_kws={"normed": True}, kde=False, bins=50, ax=axis[0])
+    axis[0].set_xlabel("pathways")
+
+    # support of each drug-> pathway assignment
+    axis[1].set_title("Support of each interaction")
+    mats1 = annot.groupby(["proper_name", "kegg_pathway_name"])['interaction_claim_source'].nunique()
+    sns.distplot(mats1, hist_kws={"normed": True}, kde=False, ax=axis[1])
+    axis[1].set_xlabel("Sources")
+
+    # types of interactions per drug (across pathways)
+    axis[2].set_title("Interaction types per drug")
+    mats2 = annot.groupby(["proper_name"])['interaction_types'].nunique()
+    sns.distplot(mats2, hist_kws={"normed": True}, kde=False, ax=axis[2])
+    axis[2].set_xlabel("Interaction types")
+
+    # types of interactions per drug-> assignemnt
+    axis[3].set_title("Interactions types per drug->pathway interaction")
+    mats3 = annot.groupby(["proper_name", "kegg_pathway_name"])['interaction_types'].nunique()
+    sns.distplot(mats3, hist_kws={"normed": True}, kde=False, ax=axis[3])
+    axis[3].set_xlabel("Interaction types")
+
+    # scores per drug (across pathways)
+    axis[4].set_title("Score per drug")
+    mats4 = annot[["proper_name", 'kegg_pathway_name', 'interaction_score']].drop_duplicates()['interaction_score']
+    sns.distplot(mats4, hist_kws={"normed": True}, kde=False, ax=axis[4])
+    axis[4].set_xlabel("Score")
+
+    # score per drug-> assignemnt
+    axis[5].set_title("Mean score per drug->pathway interaction")
+    mats5 = annot.groupby(["proper_name", "kegg_pathway_name"])['interaction_score'].mean()
+    sns.distplot(mats5, hist_kws={"normed": True}, kde=False, ax=axis[5])
+    axis[5].set_xlabel("Score")
+
+    sns.despine(fig)
+    fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-pathway.annotations.svg"), bbox_inches="tight")
+
+    # Drug vs Category
+    annot['intercept'] = 1
+    cat_pivot = pd.pivot_table(annot, index="drug", columns='category', values="intercept")
+    # get drugs with not gene annotated and add them to matrix
+    for drug in annot['drug'].drop_duplicates()[~annot['drug'].drop_duplicates().isin(cat_pivot.index)]:
+        cat_pivot.loc[drug, :] = pd.np.nan
+    # heatmap
+    fig = sns.clustermap(cat_pivot.fillna(0), figsize=(7, 12))
+    for tick in fig.ax_heatmap.get_xticklabels():
+        tick.set_rotation(90)
+    for tick in fig.ax_heatmap.get_yticklabels():
+        tick.set_rotation(0)
+    fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-categories.binary.png"), bbox_inches="tight", dpi=300)
+    fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-categories.binary.svg"), bbox_inches="tight")
+
+    # Drug vs Gene matrix heatmap
+    gene_pivot = pd.pivot_table(gene_net, index="drug", columns='entrez_gene_symbol', values="interaction_score", aggfunc=sum)
+    # get drugs with not gene annotated and add them to matrix
+    for drug in annot['drug'].drop_duplicates()[~annot['drug'].drop_duplicates().isin(gene_pivot.index)]:
+        gene_pivot.loc[drug, :] = pd.np.nan
+    # heatmap
+    fig = sns.clustermap(gene_pivot.fillna(0), figsize=(20, 10))
+    for tick in fig.ax_heatmap.get_xticklabels():
+        tick.set_rotation(90)
+    for tick in fig.ax_heatmap.get_yticklabels():
+        tick.set_rotation(0)
+    fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-gene_interactions.png"), bbox_inches="tight", dpi=300)
+    fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-gene_interactions.svg"), bbox_inches="tight")
+    # binary
+    path_pivot_binary = (~gene_pivot.isnull()).astype(int)
+    fig = sns.clustermap(path_pivot_binary, figsize=(20, 10))
+    for tick in fig.ax_heatmap.get_xticklabels():
+        tick.set_rotation(90)
+    for tick in fig.ax_heatmap.get_yticklabels():
+        tick.set_rotation(0)
+    fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-gene_interactions.binary.png"), bbox_inches="tight", dpi=300)
+    fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-gene_interactions.binary.svg"), bbox_inches="tight")
+
+    # Drug vs Gene matrix heatmap
+    path_pivot = pd.pivot_table(path_net, index="drug", columns='kegg_pathway_name', values="interaction_score", aggfunc=sum)
+    # get drugs with not gene annotated and add them to matrix
+    for drug in annot['drug'].drop_duplicates()[~annot['drug'].drop_duplicates().isin(path_pivot.index)]:
+        path_pivot.loc[drug, :] = pd.np.nan
+    # heatmap
+    fig = sns.clustermap(path_pivot.fillna(0), figsize=(20, 10))
+    for tick in fig.ax_heatmap.get_xticklabels():
+        tick.set_rotation(90)
+    for tick in fig.ax_heatmap.get_yticklabels():
+        tick.set_rotation(0)
+    fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-pathway_interactions.png"), bbox_inches="tight", dpi=300)
+    fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-pathway_interactions.svg"), bbox_inches="tight")
+    # binary
+    path_pivot_binary = (~path_pivot.isnull()).astype(int)
+    fig = sns.clustermap(path_pivot_binary, figsize=(20, 10))
+    for tick in fig.ax_heatmap.get_xticklabels():
+        tick.set_rotation(90)
+    for tick in fig.ax_heatmap.get_yticklabels():
+        tick.set_rotation(0)
+    fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-pathway_interactions.binary.png"), bbox_inches="tight", dpi=300)
+    fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-pathway_interactions.binary.svg"), bbox_inches="tight")
+
+    # cluster, label drugs with function
+
+
 def pharmacoscopy(analysis):
     """
     """
-    import string
     from mpl_toolkits.axes_grid1.inset_locator import zoomed_inset_axes
     from scipy.stats import mannwhitneyu, ks_2samp, ttest_ind
     from statsmodels.sandbox.stats.multicomp import multipletests
-
-    def annotate_drugs(sensitivity):
-        """
-        """
-        rename = {
-            "ABT-199 = Venetoclax": "ABT-199",
-            "ABT-263 = Navitoclax": "ABT-263",
-            "ABT-869 = Linifanib": "ABT-869",
-            "AC220 = Quizartinib": "AC220",
-            "Buparlisib (BKM120)": "BKM120",
-            "EGCG = Epigallocatechin gallate": "Epigallocatechin gallate",
-            "JQ1": "(+)-JQ1",
-            "MLN-518 = Tandutinib": "MLN-518",
-            "Selinexor (KPT-330)": "KPT-330"}
-        sensitivity["proper_name"] = sensitivity["drug"]
-        for p, n in rename.items():
-            sensitivity["proper_name"] = sensitivity["proper_name"].replace(p, n)
-
-        # CLOUD id/ SMILES
-        cloud = pd.read_csv(os.path.join("data", "CLOUD_simple_annotation.csv"))
-        cloud.loc[:, "name_lower"] = cloud["drug_name"].str.lower()
-        sensitivity.loc[:, "name_lower"] = sensitivity["proper_name"].str.lower()
-        annot = pd.merge(sensitivity[['drug', 'proper_name', 'name_lower']].drop_duplicates(), cloud, on="name_lower", how="left")
-
-        # DGIdb: drug -> genes
-        interact = pd.read_csv("http://dgidb.genome.wustl.edu/downloads/interactions.tsv", sep="\t")
-        interact.loc[:, "name_lower"] = interact["drug_primary_name"].str.lower()
-        cats = pd.read_csv("http://dgidb.genome.wustl.edu/downloads/categories.tsv", sep="\t")
-        dgidb = pd.merge(interact, cats, how="left")
-        dgidb.to_csv(os.path.join(analysis.data_dir, "dgidb.interactions_categories.csv"), index=False)
-        # tight match
-        annot = pd.merge(annot, dgidb, on="name_lower", how="left")
-        annot.to_csv(os.path.join(analysis.data_dir, "drugs_annotated.csv"), index=False)
-
-        # KEGG: gene -> pathways
-        from bioservices.kegg import KEGG
-        k = KEGG()
-        k.organism = "hsa"
-        paths = pd.DataFrame()
-        for gene in annot['entrez_gene_symbol'].drop_duplicates().dropna().sort_values():
-            print(gene)
-            try:
-                s = pd.Series(k.get_pathway_by_gene(gene, "hsa"))
-            except AttributeError:
-                continue
-            # if not s.isnull().all():
-            s = s.reset_index()
-            s['gene'] = gene
-            paths = paths.append(s)
-        paths.columns = ['kegg_pathway_id', 'kegg_pathway_name', 'entrez_gene_symbol']
-        paths = paths.sort_values(['entrez_gene_symbol', 'kegg_pathway_name'])
-        # match
-        annot = pd.merge(annot, paths, on="entrez_gene_symbol", how="left")
-        annot.to_csv(os.path.join(analysis.data_dir, "drugs_annotated.csv"), index=False)
-
-        # Cleanup (reduce redudancy of some)
-        annot = annot.replace("n/a", pd.np.nan)
-        annot = annot.replace("other/unknown", pd.np.nan)
-
-        # Score interactions
-        # values as direction of interaction
-        from collections import defaultdict
-        score_map = defaultdict(lambda: 0)
-        score_map.update({
-            'inducer': 1,
-            'partial agonist': 1,
-            'ligand': 0,
-            'binder': 0,
-            'multitarget': 0,
-            'adduct': 0,
-            'inhibitor': -1,
-            'agonist': -1,
-            'antagonist': -1,
-            'negative modulator': -1,
-            'competitive,inhibitor': -1,
-            'inhibitor,competitive': -1,
-            'multitarget,antagonist': -1,
-            'blocker': -1,
-        })
-
-        # Create directed Drug -> Gene network
-        gene_net = annot[['drug', 'interaction_types', 'entrez_gene_symbol']].drop_duplicates()
-        gene_net = (
-            gene_net.groupby(['drug', 'entrez_gene_symbol'])
-            ['interaction_types']
-            .apply(lambda x: pd.Series([i for i in x if not pd.isnull(i)] if not pd.isnull(x).all() else pd.np.nan))
-            .reset_index()
-        )[['drug', 'interaction_types', 'entrez_gene_symbol']]
-        # score interactions
-        gene_net['interaction_score'] = gene_net['interaction_types'].apply(lambda x: score_map[x])
-        gene_net.to_csv(os.path.join(analysis.data_dir, "pharmacoscopy.drug-gene_interactions.tsv"), sep='\t', index=False)
-        # collapse annotation to one row per drug (one classification per drug)
-        interactions = (
-            gene_net.groupby(['drug'])['interaction_types']
-            .apply(lambda x: x.value_counts().argmax() if not pd.isnull(x).all() else pd.np.nan))
-        genes = gene_net.groupby(['drug'])['entrez_gene_symbol'].aggregate(string.join, sep=";")
-        collapsed_net = pd.DataFrame([genes, interactions]).T.reset_index()
-        collapsed_net[['drug', 'interaction_types', 'entrez_gene_symbol']].to_csv(
-            os.path.join(analysis.data_dir, "pharmacoscopy.drug-gene_interactions.reduced_to_drug.tsv"), sep='\t', index=False)
-
-        # Create directed Drug -> Pathway network
-        path_net = annot[['drug', 'interaction_types', 'kegg_pathway_name']].drop_duplicates()
-        path_net = (
-            path_net.groupby(['drug', 'kegg_pathway_name'])
-            ['interaction_types']
-            .apply(lambda x: pd.Series([i for i in x if not pd.isnull(i)] if not pd.isnull(x).all() else pd.np.nan))
-            .reset_index()
-        )[['drug', 'interaction_types', 'kegg_pathway_name']]
-        # score interactions
-        path_net['interaction_score'] = path_net['interaction_types'].apply(lambda x: score_map[x])
-        path_net.to_csv(os.path.join(analysis.data_dir, "pharmacoscopy.drug-pathway_interactions.tsv"), sep='\t', index=False)
-        # collapse annotation to one row per drug (one classification per drug)
-        interactions = (
-            path_net.groupby(['drug'])['interaction_types']
-            .apply(lambda x: x.value_counts().argmax() if not pd.isnull(x).all() else pd.np.nan))
-        genes = path_net.groupby(['drug'])['kegg_pathway_name'].aggregate(string.join, sep=";")
-        collapsed_net = pd.DataFrame([genes, interactions]).T.reset_index()
-        collapsed_net[['drug', 'interaction_types', 'kegg_pathway_name']].to_csv(
-            os.path.join(analysis.data_dir, "pharmacoscopy.drug-pathway_interactions.reduced_to_drug.tsv"), sep='\t', index=False)
-
-        # Plot annotations
-
-        # Drug vs Gene matrix heatmap
-        gene_pivot = pd.pivot_table(gene_net, index="drug", columns='entrez_gene_symbol', values="interaction_score", aggfunc=sum)
-        fig = sns.clustermap(gene_pivot.fillna(0), figsize=(20, 10))
-        for tick in fig.ax_heatmap.get_xticklabels():
-            tick.set_rotation(90)
-        for tick in fig.ax_heatmap.get_yticklabels():
-            tick.set_rotation(0)
-        fig.savefig(os.path.join(analysis.data_dir, "pharmacoscopy.drug-gene_interactions.png"), bbox_inches="tight", dpi=300)
-        fig.savefig(os.path.join(analysis.data_dir, "pharmacoscopy.drug-gene_interactions.svg"), bbox_inches="tight")
-
-        # Drug vs Gene matrix heatmap
-        path_pivot = pd.pivot_table(path_net, index="drug", columns='kegg_pathway_name', values="interaction_score", aggfunc=sum)
-        fig = sns.clustermap(path_pivot.fillna(0), figsize=(20, 10))
-        for tick in fig.ax_heatmap.get_xticklabels():
-            tick.set_rotation(90)
-        for tick in fig.ax_heatmap.get_yticklabels():
-            tick.set_rotation(0)
-        fig.savefig(os.path.join(analysis.data_dir, "pharmacoscopy.drug-pathway_interactions.png"), bbox_inches="tight", dpi=300)
-        fig.savefig(os.path.join(analysis.data_dir, "pharmacoscopy.drug-pathway_interactions.svg"), bbox_inches="tight")
-
-        # cluster, label drugs with function
-
-        # Plot distributions
-        fig, axis = plt.subplots(2, 3, figsize=(12, 8))
-        axis = axis.flatten()
-
-        # how many genes per drug?
-        # sns.distplot(annot.groupby(["proper_name"])['entrez_gene_symbol'].nunique(), ax=axis[0], kde=False)
-        # sns.distplot(dgidb.groupby(["drug_primary_name"])['entrez_gene_symbol'].nunique(), ax=axis[0], kde=False)
-        axis[0].set_title("Genes per drug")
-        mats0 = annot.groupby(["proper_name"])['entrez_gene_symbol'].nunique()
-        mats0_a = dgidb.groupby(["drug_primary_name"])['entrez_gene_symbol'].nunique()
-        axis[0].hist([mats0, mats0_a], max(mats0.tolist() + mats0_a.tolist()), normed=True, histtype='bar', align='mid', alpha=0.8)
-        axis[0].set_xlabel("Genes")
-
-        ax = zoomed_inset_axes(axis[0], 3, loc=1, axes_kwargs={"xlim": (0, 30), "ylim": (0, .20)})
-        ax.hist([mats0, mats0_a], max(mats0.tolist() + mats0_a.tolist()), normed=True, histtype='bar', align='mid', alpha=0.8)
-
-        # support of each drug-> gene assignment
-        # sns.distplot(annot.groupby(["proper_name", "entrez_gene_symbol"])['interaction_claim_source'].nunique(), ax=axis[1], kde=False)
-        # sns.distplot(dgidb.groupby(["drug_primary_name", "entrez_gene_symbol"])['interaction_claim_source'].nunique(), ax=axis[1], kde=False)
-        axis[1].set_title("Support of each interaction")
-        mats1 = annot.groupby(["proper_name", "entrez_gene_symbol"])['interaction_claim_source'].nunique()
-        mats1_a = dgidb.groupby(["drug_primary_name", "entrez_gene_symbol"])['interaction_claim_source'].nunique()
-        axis[1].hist([mats1, mats1_a], max(mats1.tolist() + mats1_a.tolist()), normed=True, histtype='bar', align='mid', alpha=0.8)
-        axis[1].set_xlabel("Sources")
-
-        # types of interactions per drug (across genes)
-        # sns.distplot(annot.groupby(["proper_name"])['interaction_types'].nunique(), ax=axis[2], kde=False)
-        # sns.distplot(dgidb.groupby(["drug_primary_name"])['interaction_types'].nunique(), ax=axis[2], kde=False)
-        axis[2].set_title("Interaction types per drug")
-        mats2 = annot.groupby(["proper_name"])['interaction_types'].nunique()
-        mats2_a = dgidb.groupby(["drug_primary_name"])['interaction_types'].nunique()
-        axis[2].hist([mats2, mats2_a], max(mats2.tolist() + mats2_a.tolist()), normed=True, histtype='bar', align='mid', alpha=0.8)
-        axis[2].set_xlabel("Interaction types")
-
-        # types of interactions per drug-> assignemnt
-        # sns.distplot(annot.groupby(["proper_name", "entrez_gene_symbol"])['interaction_types'].nunique(), ax=axis[3], kde=False)
-        # sns.distplot(dgidb.groupby(["drug_primary_name", "entrez_gene_symbol"])['interaction_types'].nunique(), ax=axis[3], kde=False)
-        axis[3].set_title("Interactions types per drug->gene interaction")
-        mats3 = annot.groupby(["proper_name", "entrez_gene_symbol"])['interaction_types'].nunique()
-        mats3_a = dgidb.groupby(["drug_primary_name", "entrez_gene_symbol"])['interaction_types'].nunique()
-        axis[3].hist([mats3, mats3_a], max(mats3.tolist() + mats3_a.tolist()), normed=True, histtype='bar', align='mid', alpha=0.8)
-        axis[3].set_xlabel("Interaction types")
-
-        # types of categories per drug (across genes)
-        # sns.distplot(annot.groupby(["proper_name"])['interaction_types'].nunique(), ax=axis[4], kde=False)
-        # sns.distplot(dgidb.groupby(["drug_primary_name"])['interaction_types'].nunique(), ax=axis[4], kde=False)
-        axis[4].set_title("Categories per drug")
-        mats4 = annot.groupby(["proper_name"])['interaction_types'].nunique()
-        mats4_a = dgidb.groupby(["drug_primary_name"])['interaction_types'].nunique()
-        axis[4].hist([mats4, mats4_a], max(mats4.tolist() + mats4_a.tolist()), normed=True, histtype='bar', align='mid', alpha=0.8)
-        axis[4].set_xlabel("Categories")
-
-        # types of categories per drug-> assignemnt
-        # sns.distplot(annot.groupby(["proper_name", "entrez_gene_symbol"])['interaction_types'].nunique(), ax=axis[5], kde=False)
-        # sns.distplot(dgidb.groupby(["drug_primary_name", "entrez_gene_symbol"])['interaction_types'].nunique(), ax=axis[5], kde=False)
-        axis[5].set_title("Categories per drug->gene interaction")
-        mats5 = annot.groupby(["proper_name", "entrez_gene_symbol"])['interaction_types'].nunique()
-        mats5_a = dgidb.groupby(["drug_primary_name", "entrez_gene_symbol"])['interaction_types'].nunique()
-        axis[5].hist([mats5, mats5_a], max(mats5.tolist() + mats5_a.tolist()), normed=True, histtype='bar', align='mid', alpha=0.8)
-        axis[5].set_xlabel("Categories")
-
-        sns.despine(fig)
-        fig.savefig(os.path.join(analysis.data_dir, "drugs_annotations.svg"), bbox_inches="tight")
-
-        return annot
 
     #
     output_dir = os.path.join(analysis.results_dir, "pharmacoscopy")
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
-    tcn = pd.read_csv(os.path.join(analysis.data_dir, "pharmacoscopy_TCN.csv"))
-    cd19 = pd.read_csv(os.path.join(analysis.data_dir, "pharmacoscopy_cd19.csv"))
+    # tcn = pd.read_csv(os.path.join(analysis.data_dir, "pharmacoscopy_TCN.csv"))
+    # cd19 = pd.read_csv(os.path.join(analysis.data_dir, "pharmacoscopy_cd19.csv"))
     auc = pd.read_csv(os.path.join(analysis.data_dir, "pharmacoscopy_AUC.csv"))
     sensitivity = pd.read_csv(os.path.join(analysis.data_dir, "pharmacoscopy_sensitivity.csv"))
 
-    # Annotate drugs
-    annot = annotate_drugs(sensitivity)
+    # Read up drug annotation
+    annot = analysis.drug_annotation
     annot = pd.read_csv(os.path.join(analysis.data_dir, "drugs_annotated.csv"))
+
+    # Merge pharmacoscopy measurements with drug annotation
     sensitivity = pd.merge(sensitivity, annot, on='drug', how='left')
     auc = pd.merge(auc, annot, on='drug', how='left')
 
@@ -2110,10 +2192,10 @@ def pharmacoscopy(analysis):
     fig.savefig(os.path.join(output_dir, "scaling_demo.svg"), bbox_inches="tight")
 
     # merge in one table
-    (
-        pd.merge(pd.merge(auc, cd19, how="outer"), sensitivity, how="outer")
-        .sort_values(['original_patient_id', 'timepoint', 'drug', 'concentration'])
-        .to_csv(os.path.join(analysis.data_dir, "pharmacoscopy_all.csv"), index=False))
+    # (
+    #     pd.merge(pd.merge(auc, cd19, how="outer"), sensitivity, how="outer")
+    #     .sort_values(['original_patient_id', 'timepoint', 'drug', 'concentration'])
+    #     .to_csv(os.path.join(analysis.data_dir, "pharmacoscopy_all.csv"), index=False))
 
     # Plot distributions
     # tcn
