@@ -2147,7 +2147,32 @@ def pharmacoscopy(analysis):
     from scipy.stats import mannwhitneyu, ks_2samp, ttest_ind
     from statsmodels.sandbox.stats.multicomp import multipletests
 
-    #
+    def drug_to_pathway_space(drug_vector, drug_annotation):
+        """
+        Convert a vector of measurements for each drug (total cell numbers, sensitivities)
+        to a vector of pathway scores based on known drug -> pathway interactions (weighted or unweighted).
+        """
+        def nan_prod(a, b):
+            return np.nanprod(np.array([a, b]))
+
+        def multiply(vector, matrix):
+            res = pd.DataFrame(np.empty(matrix.shape), index=matrix.index, columns=matrix.columns)
+            for col in matrix.columns:
+                res.loc[:, col] = nan_prod(vector, matrix[col])
+            return res
+
+        # reduce interaction scores to 1 per drug->pathway interaction (by mean)
+        pathway_matrix = pd.pivot_table(
+            drug_annotation.groupby(["drug", "kegg_pathway_name"])['interaction_score'].mean().reset_index(),
+            index="drug", columns="kegg_pathway_name", values="interaction_score")
+
+        pathway_scores = multiply(vector=drug_vector, matrix=pathway_matrix)
+
+        pathway_vector = pathway_scores.sum(axis=0)
+        new_drug_space = pathway_scores.sum(axis=1)
+
+        return pathway_vector, new_drug_space
+
     output_dir = os.path.join(analysis.results_dir, "pharmacoscopy")
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -2389,6 +2414,33 @@ def pharmacoscopy(analysis):
         axis[2].set_ylabel("-log10(p-value)")
         sns.despine(fig)
         fig.savefig(os.path.join(output_dir, "{}.timepoint_change.tests.svg".format(name)), bbox_inches="tight")
+
+    # Convert each sample to pathway-space
+    pathway_space = pd.DataFrame()
+    new_drugs = pd.DataFrame()
+    for patient_id in sensitivity['patient_id'].drop_duplicates().sort_values():
+        for timepoint in sensitivity['timepoint'].drop_duplicates().sort_values(ascending=False):
+            for concentration in sensitivity['concentration'].drop_duplicates().sort_values():
+                print(patient_id, timepoint, concentration)
+                # get respective data and reduce replicates (by mean)
+                drug_vector = sensitivity.loc[
+                    (
+                        (sensitivity['patient_id'] == patient_id) &
+                        (sensitivity['timepoint'] == timepoint) &
+                        (sensitivity['concentration'] == concentration)),
+                    ['drug', 'sensitivity']].groupby('drug').mean().squeeze()
+
+                # covert between spaces
+                pathway_vector, new_drug_space = drug_to_pathway_space(
+                    drug_vector=drug_vector,
+                    drug_annotation=analysis.drug_annotation)
+
+                # save
+                sample_id = "-".join([patient_id, timepoint, str(concentration)])
+                pathway_space[sample_id] = pathway_vector
+                new_drugs[sample_id] = new_drug_space
+    pathway_space.to_csv(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.csv"))
+    new_drugs.to_csv(os.path.join(output_dir, "pharmacoscopy.sensitivity.new_drug_space.csv"))
 
 
 def add_args(parser):
