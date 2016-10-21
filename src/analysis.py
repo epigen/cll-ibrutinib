@@ -2147,7 +2147,17 @@ def pharmacoscopy(analysis):
     from scipy.stats import mannwhitneyu, ks_2samp, ttest_ind
     from statsmodels.sandbox.stats.multicomp import multipletests
 
-    def drug_to_pathway_space(drug_vector, drug_annotation):
+    def z_score(x):
+        return (x - x.mean()) / x.std()
+
+    def standard_score(x):
+        return (x - x.min()) / (x.max() - x.min())
+
+    def mean_standard_score(x):
+        re_x = (x - x.min()) / (x.max() - x.min())
+        return re_x / re_x.mean()
+
+    def drug_to_pathway_space(drug_vector, drug_annotation, plot=False, plot_label=None):
         """
         Convert a vector of measurements for each drug (total cell numbers, sensitivities)
         to a vector of pathway scores based on known drug -> pathway interactions (weighted or unweighted).
@@ -2161,12 +2171,48 @@ def pharmacoscopy(analysis):
                 res.loc[:, col] = nan_prod(vector, matrix[col])
             return res
 
-        # reduce interaction scores to 1 per drug->pathway interaction (by mean)
-        pathway_matrix = pd.pivot_table(
-            drug_annotation.groupby(["drug", "kegg_pathway_name"])['interaction_score'].mean().reset_index(),
-            index="drug", columns="kegg_pathway_name", values="interaction_score")
+        # reduce drug->pathway interaction by number of interactions
+        interaction_number = drug_annotation.groupby(["drug", "kegg_pathway_name"])['intercept'].sum().reset_index()
 
-        pathway_scores = multiply(vector=drug_vector, matrix=pathway_matrix)
+        pathway_matrix = pd.pivot_table(
+            # this would reduce interaction scores to 1 per drug->pathway interaction (by mean):
+            # drug_annotation.groupby(["drug", "kegg_pathway_name"])['interaction_score'].mean().reset_index(),
+            # I now prefer to use the total count of interactions, normalized across pathways
+            interaction_number,
+            index="drug", columns="kegg_pathway_name", values="intercept")
+
+        # normalize across pathways (to compensate for more investigated pathways)
+        dist = interaction_number.groupby("kegg_pathway_name")['intercept'].count().sort_values()
+        pathway_matrix_norm = pathway_matrix / dist
+
+        pathway_scores = multiply(vector=drug_vector, matrix=pathway_matrix_norm) / pathway_matrix_norm
+
+        if plot:
+            if 'master_fig' not in globals():
+                global master_fig
+                master_fig = sns.clustermap(np.log2(1 + pathway_matrix.fillna(0)), figsize=(30, 15))
+                for tick in master_fig.ax_heatmap.get_xticklabels():
+                    tick.set_rotation(90)
+                for tick in master_fig.ax_heatmap.get_yticklabels():
+                    tick.set_rotation(0)
+                master_fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-pathway_interactions.score.png"), bbox_inches="tight", dpi=300)
+                # fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-pathway_interactions.score.svg"), bbox_inches="tight")
+
+                fig = sns.clustermap(np.log2(1 + pathway_matrix_norm.fillna(0)), figsize=(30, 15), row_linkage=master_fig.dendrogram_row.linkage, col_linkage=master_fig.dendrogram_col.linkage)
+                for tick in fig.ax_heatmap.get_xticklabels():
+                    tick.set_rotation(90)
+                for tick in fig.ax_heatmap.get_yticklabels():
+                    tick.set_rotation(0)
+                fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-pathway_interactions.weighted_score.png"), bbox_inches="tight", dpi=300)
+                # fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-pathway_interactions.weighted_score.svg"), bbox_inches="tight")
+
+            fig = sns.clustermap(np.log2(1 + pathway_scores.fillna(0)), figsize=(30, 15), row_linkage=master_fig.dendrogram_row.linkage, col_linkage=master_fig.dendrogram_col.linkage)
+            for tick in fig.ax_heatmap.get_xticklabels():
+                tick.set_rotation(90)
+            for tick in fig.ax_heatmap.get_yticklabels():
+                tick.set_rotation(0)
+            fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-pathway_interactions.{}.sample_scores.png".format(plot_label)), bbox_inches="tight", dpi=300)
+            # fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-pathway_interactions.{}.sample_scores.svg".format(plot_label)), bbox_inches="tight")
 
         pathway_vector = abs(pathway_scores).mean(axis=0)
         new_drug_space = abs(pathway_scores).mean(axis=1)
@@ -2179,22 +2225,20 @@ def pharmacoscopy(analysis):
 
     # tcn = pd.read_csv(os.path.join(analysis.data_dir, "pharmacoscopy_TCN.csv"))
     # cd19 = pd.read_csv(os.path.join(analysis.data_dir, "pharmacoscopy_cd19.csv"))
-    auc = pd.read_csv(os.path.join(analysis.data_dir, "pharmacoscopy_AUC.csv"))
     sensitivity = pd.read_csv(os.path.join(analysis.data_dir, "pharmacoscopy_sensitivity.csv"))
+    auc = pd.read_csv(os.path.join(analysis.data_dir, "pharmacoscopy_AUC.csv")).dropna()
 
     # Read up drug annotation
-    annot = analysis.drug_annotation
-    annot = pd.read_csv(os.path.join(analysis.data_dir, "drugs_annotated.csv"))
-
-    # Merge pharmacoscopy measurements with drug annotation
-    sensitivity = pd.merge(sensitivity, annot, on='drug', how='left')
-    auc = pd.merge(auc, annot, on='drug', how='left')
+    # annot = analysis.drug_annotation
+    # annot = pd.read_csv(os.path.join(analysis.data_dir, "drugs_annotated.csv"))
 
     # transform AUC to inverse
     auc["AUC"] *= -1
     # scale values
     sensitivity["sensitivity_scaled"] = np.log2(1 + abs(sensitivity["sensitivity"])) * (sensitivity["sensitivity"] > 0).astype(int).replace(0, -1)
-    auc["AUC_scaled"] = np.log2(1 + abs(auc["AUC"])) * (auc["AUC"] < 0).astype(int).replace(0, -1)
+    sensitivity["sensitivity_scaled_normal"] = mean_standard_score(sensitivity["sensitivity_scaled"])
+    auc["AUC_scaled"] = np.log2(1 + abs(auc["AUC"])) * (auc["AUC"] > 0).astype(int).replace(0, -1)
+    auc["AUC_scaled_normal"] = mean_standard_score(auc["AUC_scaled"])
 
     # demonstrate the scaling
     fig, axis = plt.subplots(2, 2, figsize=(12, 12), sharex=False, sharey=False)
@@ -2418,25 +2462,27 @@ def pharmacoscopy(analysis):
     # Convert each sample to pathway-space
     pathway_space = pd.DataFrame()
     new_drugs = pd.DataFrame()
-    for original_patient_id in sensitivity['original_patient_id'].drop_duplicates().sort_values():
+    for original_patient_id in sensitivity['original_patient_id'].drop_duplicates().sort_values()[5:]:
         for timepoint in sensitivity['timepoint'].drop_duplicates().sort_values(ascending=False):
             for concentration in sensitivity['concentration'].drop_duplicates().sort_values():
-                print(original_patient_id, timepoint, concentration)
+                sample_id = "-".join([original_patient_id, timepoint, str(concentration)])
+                print(sample_id)
                 # get respective data and reduce replicates (by mean)
                 drug_vector = sensitivity.loc[
                     (
                         (sensitivity['original_patient_id'] == original_patient_id) &
                         (sensitivity['timepoint'] == timepoint) &
                         (sensitivity['concentration'] == concentration)),
-                    ['drug', 'sensitivity']].groupby('drug').mean().squeeze()
+                    ['drug', 'sensitivity_scaled_normal']].groupby('drug').mean().squeeze()
 
                 # covert between spaces
                 pathway_vector, new_drug_space = drug_to_pathway_space(
                     drug_vector=drug_vector,
-                    drug_annotation=analysis.drug_annotation)
+                    drug_annotation=analysis.drug_annotation,
+                    plot=True,
+                    plot_label=sample_id)
 
                 # save
-                sample_id = "-".join([original_patient_id, timepoint, str(concentration)])
                 pathway_space[sample_id] = pathway_vector
                 new_drugs[sample_id] = new_drug_space
     pathway_space.to_csv(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.csv"))
