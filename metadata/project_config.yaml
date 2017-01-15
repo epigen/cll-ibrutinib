@@ -56,6 +56,17 @@ compute:
   #submission_template: templates/localhost_template.sub
   #submission_command: sh
 
+subprojects:
+  cll-chromatin:
+        metadata:
+          sample_annotation: cll-chromatin.csv
+  stanford_atacseq:
+        metadata:
+          sample_annotation: stanford_atacseq.csv
+  bcells:
+        metadata:
+          sample_annotation: bcells.csv
+
 trackhubs:
   trackhub_dir: /data/groups/lab_bock/public_html/arendeiro/cll-ibrutinib/
   # url: if you include this, the make_trackhubs will produce a link to your track hub in the project folder.
