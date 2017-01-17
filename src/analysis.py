@@ -1794,7 +1794,6 @@ class Analysis(object):
         def z_score(x):
             return (x - x.mean()) / x.std()
 
-        import scipy
         if samples is None:
             samples = [s for s in self.samples if s.patient_id != "CLL16"]
 
@@ -1821,109 +1820,109 @@ class Analysis(object):
         X = self.accessibility.ix[diff][[s.name for s in samples]].apply(z_score, axis=1)
         X.columns = X.columns.get_level_values("sample_name")
 
-        # 1. Get extremes of response by aggregating samples
-        # try mean, median, max or 95th percentile of each side
+        # 1. Compute score based on intensities of up- or down-regulated regions
+        # 1.1 get up and down
         cond1, cond2 = sorted(set([getattr(s, trait) for s in samples]))
+        u1 = X[[s.name for s in samples if getattr(s, trait) == cond1]].mean(axis=1)
+        u2 = X[[s.name for s in samples if getattr(s, trait) == cond2]].mean(axis=1)
+        extremes = pd.DataFrame([u1, u2], index=[cond1, cond2]).T
+        up = extremes[extremes['after_Ibrutinib'] > extremes['before_Ibrutinib']].index
+        down = extremes[extremes['after_Ibrutinib'] < extremes['before_Ibrutinib']].index
 
-        for metric in ["mean", "median"]:
-            u1 = X[[s.name for s in samples if getattr(s, trait) == cond1]].apply(getattr(np, metric), axis=1)
-            u2 = X[[s.name for s in samples if getattr(s, trait) == cond2]].apply(getattr(np, metric), axis=1)
+        # 1.2 Make score
+        # get sum/mean intensities in either
+        # weighted by each side contribution to the signature
+        # sum the value of each side
+        scores = (
+            -(X.ix[up].mean(axis=0) * (float(up.size) / X.shape[0])) +
+            (X.ix[down].mean(axis=0) * (float(down.size) / X.shape[0]))
+        )
+        # reverse for post samples (give positive values for depletion in downregulated regions, negative for depletion in upregulated)
+        scores.loc[scores.index.str.contains("post")] = -scores.loc[scores.index.str.contains("post")]
 
-            # 1b)
-            # visualize all generated extremes with samples
-            extremes = pd.DataFrame([u1, u2], index=[cond1, cond2]).T
-            colors = [x + [[0., 0., 0.1, 0.5]] * 2 for x in color_dataframe.values.tolist()]
+        # 2. Visualize
+        cmap = plt.get_cmap("RdBu_r")
+        norm = matplotlib.colors.Normalize(vmin=-1, vmax=1)
+        g = sns.clustermap(
+            X.T,
+            xticklabels=False, yticklabels=sample_display_names.tolist(), annot=True,
+            figsize=(15, 15), cbar_kws={"label": "Z-score of accessibility"}, row_colors=cmap(norm(scores.ix[X.columns])))
+        g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+        g.ax_heatmap.set_xlabel(g.ax_heatmap.get_xlabel(), visible=False)
+        g.ax_heatmap.set_ylabel(g.ax_heatmap.get_ylabel(), visible=False)
+        g.fig.savefig(os.path.join(output_dir, "%s.%s.diff_regions.intensity_score_per_condition.clustermap.z0.svg" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
 
-            X_e = X.join(extremes)
+        # joint response per patient
+        # mean of both timepoints
+        p = scores.index.str.extract(".*(CLL\d+)_.*", expand=False).tolist()
+        t = scores.index.str.extract(".*_(.*)$", expand=False).tolist()
+        s = pd.DataFrame([scores.tolist(), p, t], index=["score", "patient_id", "timepoint"], columns=scores.index).T
+        s['score'] = s['score'].astype(float)
+        m_s = s.groupby("patient_id")['score'].mean()
+        m_s.name = "combined_score"
+        s = pd.merge(s.reset_index(), m_s.reset_index())
+        s = s.sort_values(['combined_score', 'timepoint'])
 
+        # complete color dataframe with score color
+        cd = color_dataframe.T
+        cd.index.name = "sample_name"
+        cd = cd.join(s.set_index("sample_name")['score'])
+        cd['score'] = cd['score'].apply(norm).apply(cmap)
+
+        cmap = plt.get_cmap("RdBu_r")
+        norm = matplotlib.colors.Normalize(vmin=-0.2, vmax=1)
+
+        g = sns.clustermap(
+            X[s.sort_values('score')['sample_name']].T, row_cluster=False,
+            xticklabels=False, annot=True,
+            figsize=(15, 15), cbar_kws={"label": "Z-score of accessibility"}, row_colors=cd.ix[s.sort_values('score')['sample_name']].T.values.tolist())
+        g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+        g.ax_heatmap.set_xlabel(g.ax_heatmap.get_xlabel(), visible=False)
+        g.ax_heatmap.set_ylabel(g.ax_heatmap.get_ylabel(), visible=False)
+        g.fig.savefig(os.path.join(output_dir, "%s.%s.diff_regions.intensity_score_per_condition.clustermap.sorted.svg" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
+
+        for tp in ['pre', 'post']:
             g = sns.clustermap(
-                X_e.corr(),
-                xticklabels=False, yticklabels=sample_display_names.tolist() + [cond1, cond2], annot=True, vmin=0, vmax=1,
-                cmap="Spectral_r", figsize=(15, 15), cbar_kws={"label": "Pearson correlation"}, row_colors=colors)
+                X[s[s['sample_name'].str.contains(tp)].sort_values('score')['sample_name']].T, row_cluster=False,
+                xticklabels=False, annot=True,
+                figsize=(15, 7.5), cbar_kws={"label": "Z-score of accessibility"}, row_colors=cd.ix[s[s['sample_name'].str.contains(tp)].sort_values('score')['sample_name']].T.values.tolist())
             g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
             g.ax_heatmap.set_xlabel(g.ax_heatmap.get_xlabel(), visible=False)
             g.ax_heatmap.set_ylabel(g.ax_heatmap.get_ylabel(), visible=False)
-            g.fig.savefig(os.path.join(output_dir, "%s.%s.diff_regions.scores.extremes.clustermap.corr.svg" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
+            g.fig.savefig(os.path.join(output_dir, "{}.{}.diff_regions.intensity_score_per_condition.clustermap.sorted.{}_samples_only.svg".format(output_suffix, trait, tp)), bbox_inches="tight", dpi=300)
 
-            g = sns.clustermap(
-                X_e.T,
-                xticklabels=False, yticklabels=sample_display_names.tolist() + [cond1, cond2], annot=True,
-                figsize=(15, 15), cbar_kws={"label": "Accessibility"}, row_colors=colors)
-            g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
-            g.ax_heatmap.set_xlabel(g.ax_heatmap.get_xlabel(), visible=False)
-            g.ax_heatmap.set_ylabel(g.ax_heatmap.get_ylabel(), visible=False)
-            g.fig.savefig(os.path.join(output_dir, "%s.%s.diff_regions.scores.extremes.clustermap.svg" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
+        # complete color dataframe with combined score color
+        cd = color_dataframe.T
+        cd.index.name = "sample_name"
+        cd = cd.join(s.set_index("sample_name")['combined_score'])
 
-            g = sns.clustermap(
-                X_e.T, z_score=1,
-                xticklabels=False, yticklabels=sample_display_names.tolist() + [cond1, cond2], annot=True,
-                figsize=(15, 15), cbar_kws={"label": "Z-score of accessibility"}, row_colors=colors)
-            g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
-            g.ax_heatmap.set_xlabel(g.ax_heatmap.get_xlabel(), visible=False)
-            g.ax_heatmap.set_ylabel(g.ax_heatmap.get_ylabel(), visible=False)
-            g.fig.savefig(os.path.join(output_dir, "%s.%s.diff_regions.scores.extremes.clustermap.z0.svg" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
+        cd['combined_score'] = cd['combined_score'].apply(norm).apply(cmap)
 
-            # 2. Calculate distances
+        cmap = plt.get_cmap("RdBu_r")
+        norm = matplotlib.colors.Normalize(vmin=0, vmax=1)
+        g = sns.clustermap(
+            X[s['sample_name']].T, row_cluster=False,
+            xticklabels=False, annot=True,
+            figsize=(15, 15), cbar_kws={"label": "Z-score of accessibility"}, row_colors=cd.ix[s['sample_name']].T.values.tolist())
+        g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+        g.ax_heatmap.set_xlabel(g.ax_heatmap.get_xlabel(), visible=False)
+        g.ax_heatmap.set_ylabel(g.ax_heatmap.get_ylabel(), visible=False)
+        g.fig.savefig(os.path.join(output_dir, "%s.%s.diff_regions.intensity_score_combined.clustermap.sorted.svg" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
 
-            # 2a) between extremes
-            d_u1_u2 = scipy.spatial.distance.euclidean(u1, u2)
+        cmap = plt.get_cmap("RdBu_r")
+        norm = matplotlib.colors.Normalize(vmin=0, vmax=1)
+        g = sns.clustermap(
+            X[s['sample_name']].T, row_cluster=True,
+            xticklabels=False, annot=True,
+            figsize=(15, 15), cbar_kws={"label": "Z-score of accessibility"}, row_colors=cd.ix[s['sample_name']].T.values.tolist())
+        g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+        g.ax_heatmap.set_xlabel(g.ax_heatmap.get_xlabel(), visible=False)
+        g.ax_heatmap.set_ylabel(g.ax_heatmap.get_ylabel(), visible=False)
+        g.fig.savefig(os.path.join(output_dir, "%s.%s.diff_regions.intensity_score_combined.clustermap.cluster.svg" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
 
-            # 2b) between samples and generated extremes
-            dists = pd.DataFrame(scipy.spatial.distance.squareform(scipy.spatial.distance.pdist(X_e.T, metric="correlation")), index=X_e.columns, columns=X_e.columns)
+        # 3. Correlate score with all variables
 
-            # 3. Compute score based on distances
-            # score = d^12 - sqrt(d^A * d^B)
-            patient_ids = dists.index.str.extract(".*(CLL\d+).*").drop_duplicates().dropna()
-            dA = z_score(pd.Series(dists.loc[dists.index.str.contains("post"), "after_Ibrutinib"].values, index=patient_ids))
-            dB = z_score(pd.Series(dists.loc[dists.index.str.contains("pre"), "before_Ibrutinib"].values, index=patient_ids))
-            # d = pd.Series(np.sqrt(dA * dB), index=patient_ids) / d_u1_u2
-            d = pd.Series(dA + dB, index=patient_ids)
-
-            # 3b. visualize score(s)
-            # Scatter of After/Before score
-            i = min(dA.min(), dB.min())
-            a = max(dA.max(), dB.max())
-            fig, axis = plt.subplots(1)
-            axis.scatter(dA, dB)
-            # axis.plot([(i, i), (a, a)], linestyle='--')
-            # axis.set_xlim(-2, 2)
-            # axis.set_ylim(-2, 2)
-
-            # Heatmap + bar showing combined score
-            cmap = plt.get_cmap("RdBu_r")
-            norm = matplotlib.colors.Normalize(vmin=-2, vmax=2)
-
-            s = dA.append(dB)
-
-            c = np.empty((s.size + s.size,), dtype=s.dtype)
-            c[0::2] = s
-            c[1::2] = s
-
-            g = sns.clustermap(
-                X.T, z_score=1,
-                xticklabels=False, yticklabels=sample_display_names.tolist(), annot=True,
-                figsize=(15, 15), cbar_kws={"label": "Z-score of accessibility"}, row_colors=cmap(norm(c)))
-            g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
-            g.ax_heatmap.set_xlabel(g.ax_heatmap.get_xlabel(), visible=False)
-            g.ax_heatmap.set_ylabel(g.ax_heatmap.get_ylabel(), visible=False)
-            g.fig.savefig(os.path.join(output_dir, "%s.%s.diff_regions.score_per_condition.clustermap.z0.svg" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
-
-            c = np.empty((d.size + d.size,), dtype=d.dtype)
-            c[0::2] = d
-            c[1::2] = d
-
-            g = sns.clustermap(
-                X.T, z_score=1,
-                xticklabels=False, yticklabels=sample_display_names.tolist(), annot=True,
-                figsize=(15, 15), cbar_kws={"label": "Z-score of accessibility"}, row_colors=cmap(norm(c)))
-            g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
-            g.ax_heatmap.set_xlabel(g.ax_heatmap.get_xlabel(), visible=False)
-            g.ax_heatmap.set_ylabel(g.ax_heatmap.get_ylabel(), visible=False)
-            g.fig.savefig(os.path.join(output_dir, "%s.%s.diff_regions.combined_score.clustermap.z0.svg" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
-
-            # 4. Correlate score with all variables
-
-            #
+        #
 
     def interaction_differential_analysis(
             self, samples, formula="~patient_id * timepoint_name",
