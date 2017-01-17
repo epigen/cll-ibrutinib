@@ -466,7 +466,7 @@ class Analysis(object):
             self,
             attributes=[
                 "sample_name", "cell_type", "patient_id", "clinical_centre", "timepoint_name", "patient_gender", "patient_age_at_collection",
-                "ighv_mutation_status", "CD38_cells_percentage", "leuko_count (103/µL)", "% lymphocytes", "purity (CD5+/CD19+)", "%CD19/CD38",
+                "ighv_mutation_status", "CD38_cells_percentage", "leuko_count (10^3/uL)", "% lymphocytes", "purity (CD5+/CD19+)", "%CD19/CD38", "% CD3", "% CD14", "% B cells", "% T cells",
                 "del11q", "del13q", "del17p", "tri12", "p53",
                 "time_since_treatment", "treatment_response"]):
 
@@ -776,7 +776,7 @@ class Analysis(object):
     def unsupervised(
             self, samples, attributes=[
                 "sample_name", "cell_type", "patient_id", "clinical_centre", "timepoint_name", "patient_gender", "patient_age_at_collection",
-                "ighv_mutation_status", "CD38_cells_percentage", "leuko_count (103/µL)", "% lymphocytes", "purity (CD5+/CD19+)", "%CD19/CD38",
+                "ighv_mutation_status", "CD38_cells_percentage", "leuko_count (10^3/uL)", "% lymphocytes", "purity (CD5+/CD19+)", "%CD19/CD38", "% CD3", "% CD14", "% B cells", "% T cells",
                 "del11q", "del13q", "del17p", "tri12", "p53",
                 "time_since_treatment", "treatment_response"],
             exclude=[]):
@@ -1492,7 +1492,7 @@ class Analysis(object):
         # Sample level
         attributes = [
             "patient_id", "timepoint_name", "patient_gender", "patient_age_at_collection",
-            "ighv_mutation_status", "CD38_cells_percentage", "leuko_count (103/µL)", "% lymphocytes", "purity (CD5+/CD19+)", "%CD19/CD38",
+            "ighv_mutation_status", "CD38_cells_percentage", "leuko_count (10^3/uL)", "% lymphocytes", "purity (CD5+/CD19+)", "%CD19/CD38", "% CD3", "% CD14", "% B cells", "% T cells",
             "del11q", "del13q", "del17p", "tri12", "p53",
             "time_since_treatment", "treatment_response"]
         color_dataframe = pd.DataFrame(self.get_level_colors(levels=attributes), index=attributes, columns=[s.name for s in self.samples])
@@ -1785,7 +1785,7 @@ class Analysis(object):
             self, samples=None, trait="timepoint_name",
             output_suffix="ibrutinib_treatment", attributes=[
                 "sample_name", "cell_type", "patient_id", "clinical_centre", "timepoint_name", "patient_gender", "patient_age_at_collection",
-                "ighv_mutation_status", "CD38_cells_percentage", "leuko_count (103/µL)", "% lymphocytes", "purity (CD5+/CD19+)", "%CD19/CD38",
+                "ighv_mutation_status", "CD38_cells_percentage", "leuko_count (10^3/uL)", "% lymphocytes", "purity (CD5+/CD19+)", "%CD19/CD38", "% CD3", "% CD14", "% B cells", "% T cells",
                 "del11q", "del13q", "del17p", "tri12", "p53",
                 "time_since_treatment", "treatment_response"]):
         """
@@ -1860,22 +1860,23 @@ class Analysis(object):
         s['score'] = s['score'].astype(float)
         m_s = s.groupby("patient_id")['score'].mean()
         m_s.name = "combined_score"
-        s = pd.merge(s.reset_index(), m_s.reset_index())
-        s = s.sort_values(['combined_score', 'timepoint'])
+        scores = pd.merge(s.reset_index(), m_s.reset_index())
+        scores = scores.sort_values(['combined_score', 'timepoint'])
+        scores.to_csv(os.path.join(output_dir, "%s.%s.diff_regions.intensity_scores.csv" % (output_suffix, trait)))
 
         # complete color dataframe with score color
         cd = color_dataframe.T
         cd.index.name = "sample_name"
-        cd = cd.join(s.set_index("sample_name")['score'])
+        cd = cd.join(scores.set_index("sample_name")['score'])
         cd['score'] = cd['score'].apply(norm).apply(cmap)
 
         cmap = plt.get_cmap("RdBu_r")
         norm = matplotlib.colors.Normalize(vmin=-0.2, vmax=1)
 
         g = sns.clustermap(
-            X[s.sort_values('score')['sample_name']].T, row_cluster=False,
+            X[scores.sort_values('score')['sample_name']].T, row_cluster=False,
             xticklabels=False, annot=True,
-            figsize=(15, 15), cbar_kws={"label": "Z-score of accessibility"}, row_colors=cd.ix[s.sort_values('score')['sample_name']].T.values.tolist())
+            figsize=(15, 15), cbar_kws={"label": "Z-score of accessibility"}, row_colors=cd.ix[scores.sort_values('score')['sample_name']].T.values.tolist())
         g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
         g.ax_heatmap.set_xlabel(g.ax_heatmap.get_xlabel(), visible=False)
         g.ax_heatmap.set_ylabel(g.ax_heatmap.get_ylabel(), visible=False)
@@ -1883,9 +1884,9 @@ class Analysis(object):
 
         for tp in ['pre', 'post']:
             g = sns.clustermap(
-                X[s[s['sample_name'].str.contains(tp)].sort_values('score')['sample_name']].T, row_cluster=False,
+                X[scores[scores['sample_name'].str.contains(tp)].sort_values('score')['sample_name']].T, row_cluster=False,
                 xticklabels=False, annot=True,
-                figsize=(15, 7.5), cbar_kws={"label": "Z-score of accessibility"}, row_colors=cd.ix[s[s['sample_name'].str.contains(tp)].sort_values('score')['sample_name']].T.values.tolist())
+                figsize=(15, 7.5), cbar_kws={"label": "Z-score of accessibility"}, row_colors=cd.ix[scores[scores['sample_name'].str.contains(tp)].sort_values('score')['sample_name']].T.values.tolist())
             g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
             g.ax_heatmap.set_xlabel(g.ax_heatmap.get_xlabel(), visible=False)
             g.ax_heatmap.set_ylabel(g.ax_heatmap.get_ylabel(), visible=False)
@@ -1894,33 +1895,99 @@ class Analysis(object):
         # complete color dataframe with combined score color
         cd = color_dataframe.T
         cd.index.name = "sample_name"
-        cd = cd.join(s.set_index("sample_name")['combined_score'])
+        cd = cd.join(scores.set_index("sample_name")['combined_score'])
 
         cd['combined_score'] = cd['combined_score'].apply(norm).apply(cmap)
 
         cmap = plt.get_cmap("RdBu_r")
         norm = matplotlib.colors.Normalize(vmin=0, vmax=1)
         g = sns.clustermap(
-            X[s['sample_name']].T, row_cluster=False,
+            X[scores['sample_name']].T, row_cluster=False,
             xticklabels=False, annot=True,
-            figsize=(15, 15), cbar_kws={"label": "Z-score of accessibility"}, row_colors=cd.ix[s['sample_name']].T.values.tolist())
+            figsize=(15, 15), cbar_kws={"label": "Z-score of accessibility"}, row_colors=cd.ix[scores['sample_name']].T.values.tolist())
         g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
         g.ax_heatmap.set_xlabel(g.ax_heatmap.get_xlabel(), visible=False)
         g.ax_heatmap.set_ylabel(g.ax_heatmap.get_ylabel(), visible=False)
-        g.fig.savefig(os.path.join(output_dir, "%s.%s.diff_regions.intensity_score_combined.clustermap.sorted.svg" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
+        g.fig.savefig(os.path.join(output_dir, "{}.{}.diff_regions.intensity_score_combined.clustermap.sorted.svg" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
 
         cmap = plt.get_cmap("RdBu_r")
         norm = matplotlib.colors.Normalize(vmin=0, vmax=1)
         g = sns.clustermap(
-            X[s['sample_name']].T, row_cluster=True,
+            X[scores['sample_name']].T, row_cluster=True,
             xticklabels=False, annot=True,
-            figsize=(15, 15), cbar_kws={"label": "Z-score of accessibility"}, row_colors=cd.ix[s['sample_name']].T.values.tolist())
+            figsize=(15, 15), cbar_kws={"label": "Z-score of accessibility"}, row_colors=cd.ix[scores['sample_name']].T.values.tolist())
         g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
         g.ax_heatmap.set_xlabel(g.ax_heatmap.get_xlabel(), visible=False)
         g.ax_heatmap.set_ylabel(g.ax_heatmap.get_ylabel(), visible=False)
-        g.fig.savefig(os.path.join(output_dir, "%s.%s.diff_regions.intensity_score_combined.clustermap.cluster.svg" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
+        g.fig.savefig(os.path.join(output_dir, "{}.{}.diff_regions.intensity_score_combined.clustermap.cluster.svg".format(output_suffix, trait)), bbox_inches="tight", dpi=300)
 
         # 3. Correlate score with all variables
+
+        # # Test association of PCs with attributes
+        scores = scores.set_index('sample_name').ix[[s.name for s in samples]]
+
+        import itertools
+        from scipy.stats import kruskal
+        from scipy.stats import pearsonr
+        associations = list()
+
+        for measurement in ["score", "combined_score"]:
+            for attr in attributes[5:]:
+                print("Attribute {}.".format(attr))
+                sel_samples = [s for s in samples if hasattr(s, attr)]
+                sel_samples = [s for s in sel_samples if not pd.isnull(getattr(s, attr))]
+
+                # Get all values of samples for this attr
+                groups = set([getattr(s, attr) for s in sel_samples])
+
+                # Determine if attr is categorical or continuous
+                if all([type(i) in [str, bool] for i in groups]) or len(groups) == 2:
+                    variable_type = "categorical"
+                elif all([type(i) in [int, float, np.int64, np.float64] for i in groups]):
+                    variable_type = "numerical"
+                else:
+                    print("attr %s cannot be tested." % attr)
+                    associations.append([measurement, attr, variable_type, np.nan, np.nan, np.nan, np.nan])
+                    continue
+
+                if variable_type == "categorical":
+                    # It categorical, test pairwise combinations of attributes
+                    for group1, group2 in itertools.combinations(groups, 2):
+                        g1_values = scores.loc[scores.index.isin([s.name for s in sel_samples if getattr(s, attr) == group1]), measurement]
+                        g2_values = scores.loc[scores.index.isin([s.name for s in sel_samples if getattr(s, attr) == group2]), measurement]
+
+                        # Test ANOVA (or Kruskal-Wallis H-test)
+                        st, p = kruskal(g1_values, g2_values)
+
+                        # Append
+                        associations.append([measurement, attr, variable_type, group1, group2, p, st])
+
+                elif variable_type == "numerical":
+                    # It numerical, calculate pearson correlation
+                    trait_values = [getattr(s, attr) for s in sel_samples]
+                    st, p = pearsonr(scores[measurement].ix[[s.name for s in sel_samples]], trait_values)
+
+                    associations.append([measurement, attr, variable_type, np.nan, np.nan, p, st])
+
+        associations = pd.DataFrame(associations, columns=["score", "attribute", "variable_type", "group_1", "group_2", "p_value", "stat"])
+
+        # write
+        associations.to_csv(os.path.join(self.results_dir, "{}.{}.diff_regions.intensity_score_combined.associations.csv".format(output_suffix, trait)), index=False)
+
+        # Plot
+        # associations[associations['p_value'] < 0.05].drop(['group_1', 'group_2'], axis=1).drop_duplicates()
+        # associations.drop(['group_1', 'group_2'], axis=1).drop_duplicates().pivot(index="score", columns="attribute", values="p_value")
+        pivot = associations.groupby(["score", "attribute"]).min()['p_value'].reset_index().pivot(index="score", columns="attribute", values="p_value").dropna(axis=1)
+
+        # heatmap of -log p-values
+        g = sns.clustermap(-np.log10(pivot), row_cluster=False, annot=True, cbar_kws={"label": "-log10(p_value) of association"})
+        g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=45, ha="right")
+        g.fig.savefig(os.path.join(self.results_dir, "{}.{}.diff_regions.intensity_score_combined.associations.svg".format(output_suffix, trait)), bbox_inches="tight")
+
+        # heatmap of masked significant
+        g = sns.clustermap((pivot < 0.05).astype(int), row_cluster=False, cbar_kws={"label": "significant association"})
+        g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=45, ha="right")
+        g.fig.savefig(os.path.join(self.results_dir, "{}.{}.diff_regions.intensity_score_combined.associations.masked.svg".format(output_suffix, trait)), bbox_inches="tight")
 
         #
 
@@ -4405,7 +4472,7 @@ def main():
         analysis.samples,
         attributes=[
             "patient_id", "timepoint_name", "patient_gender", "patient_age_at_collection",
-            "ighv_mutation_status", "CD38_cells_percentage", "leuko_count (103/µL)", "% lymphocytes", "purity (CD5+/CD19+)", "%CD19/CD38",
+            "ighv_mutation_status", "CD38_cells_percentage", "leuko_count (10^3/uL)", "% lymphocytes", "purity (CD5+/CD19+)", "%CD19/CD38", "% CD3", "% CD14", "% B cells", "% T cells",
             "del11q", "del13q", "del17p", "tri12", "p53",
             "time_since_treatment", "treatment_response"])
 
