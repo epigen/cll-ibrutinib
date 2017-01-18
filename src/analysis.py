@@ -2946,15 +2946,15 @@ def pharmacoscopy(analysis):
         sns.despine(fig)
         fig.savefig(os.path.join(output_dir, "{}.across_patients.scatter.svg".format(name)), bbox_inches="tight")
 
-        # Difference between timepoints (mean of concentrations)
+        # Difference between timepoints
         df_pivot2 = (
             df.groupby(['patient_id', 'drug', 'timepoint_name'])
             [name].mean()
             .reset_index())
-        post = df_pivot2[df_pivot2['timepoint_name'] == "after_Ibrutinib"].pivot_table(index="patient_id", columns="drug", values=name)
-        pre = df_pivot2[df_pivot2['timepoint_name'] == "before_Ibrutinib"].pivot_table(index="patient_id", columns="drug", values=name)
+        a = df_pivot2[df_pivot2['timepoint_name'] == "after_Ibrutinib"].pivot_table(index="patient_id", columns="drug", values=name)
+        b = df_pivot2[df_pivot2['timepoint_name'] == "before_Ibrutinib"].pivot_table(index="patient_id", columns="drug", values=name)
 
-        abs_diff = post - pre
+        abs_diff = a - b
 
         # clustered
         fig = sns.clustermap(abs_diff.dropna(), figsize=(20, 8))
@@ -3087,106 +3087,92 @@ def pharmacoscopy(analysis):
     # fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.new_drugs.z_score.svg"), bbox_inches='tight')
 
     # correlate samples in pathway space
-    fig = sns.clustermap(pathway_space.T.dropna().T.corr(), figsize=(8, 8))
-    for tick in fig.ax_heatmap.get_xticklabels():
-        tick.set_rotation(90)
-    for tick in fig.ax_heatmap.get_yticklabels():
-        tick.set_rotation(0)
-    fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.pearson.png"), dpi=300, bbox_inches='tight')
-    # fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.svg"), bbox_inches='tight')
+    g = sns.clustermap(pathway_space.T.dropna().T.corr(), figsize=(8, 8), xticklabels=False)
+    g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0, fontsize=6)
+    g.fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.pearson.png"), dpi=300, bbox_inches='tight')
 
     # correlate pathways
     g = sns.clustermap(pathway_space.T.dropna().corr(), figsize=(20, 20), xticklabels=False)
     g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0, fontsize=6)
     g.fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.pathways.pearson.png"), dpi=300, bbox_inches='tight')
 
-    # Calculate fold-changes
-    pathway_space3 = pathway_space2.reset_index(1)
-    pathway_space3 = pathway_space3[pathway_space3['timepoint'] == "post"].drop('timepoint', axis=1) - pathway_space3[pathway_space3['timepoint'] == "pre"].drop('timepoint', axis=1)
-    new_drugs3 = new_drugs2.reset_index(1)
-    new_drugs3 = new_drugs3[new_drugs3['timepoint'] == "post"].drop('timepoint', axis=1) - new_drugs3[new_drugs3['timepoint'] == "pre"].drop('timepoint', axis=1)
+    #
+
+    # Differential
+    a = pathway_space[pathway_space.columns[pathway_space.columns.str.contains("after")]].mean(axis=1)
+    b = pathway_space[pathway_space.columns[pathway_space.columns.str.contains("before")]].mean(axis=1)
+
+    # scatter
+    from statsmodels.nonparametric.smoothers_lowess import lowess
+    fit = lowess(b, a, return_sorted=False)
+    dist = abs(b - fit)
+    norm = matplotlib.colors.Normalize(vmin=0, vmax=dist.max())
+
+    fig, axis = plt.subplots(1, figsize=(4, 4))
+    axis.scatter(a, b, color=plt.cm.inferno(norm(dist)), alpha=0.8)
+    for l in (fit - b).sort_values().tail(10).index:
+        axis.text(a.ix[l], b.ix[l], l, fontsize=7.5, ha="left")
+    for l in (b - fit).sort_values().tail(10).index:
+        axis.text(a.ix[l], b.ix[l], l, fontsize=7.5, ha="right")
+    axis.set_xlabel("After ibrutinib")
+    axis.set_ylabel("Before ibrutinib")
+    sns.despine(fig)
+    fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.differential.scatter.svg"), bbox_inches="tight")
+
+    # rank vs cross-patient sensitivity
+    abs_diff = (a - b).sort_values()
+    abs_diff.to_csv(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.differential.abs_diff.csv"))
+    norm = matplotlib.colors.Normalize(vmin=abs_diff.min(), vmax=abs_diff.max())
+
+    fig, axis = plt.subplots(1, figsize=(4, 4))
+    axis.scatter(abs_diff.rank(), abs_diff, color=plt.cm.inferno(norm(abs_diff)), alpha=0.8)
+    axis.axhline(0, color="black", alpha=0.8, linestyle="--")
+    for l in abs_diff.head(15).index:
+        axis.text(abs_diff.rank().ix[l], abs_diff.ix[l], l, fontsize=5, ha="left")
+    for l in abs_diff.tail(15).index:
+        axis.text(abs_diff.rank().ix[l], abs_diff.ix[l], l, fontsize=5, ha="right")
+    axis.set_xlabel("Rank in change pathway accessibility")
+    axis.set_ylabel("Log2(fold change) in pathway accessibilty (after/before)")
+    sns.despine(fig)
+    fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.differential.rank.svg"), bbox_inches="tight")
+
+    # Differential, patient-specific
+    pathway_space2 = pathway_space.T
+    # pathway_space2["patient"] = pd.Series(pathway_space2.index.str.split("-"), index=pathway_space2.index).apply(lambda x: x[0]).astype("category")
+    pathway_space2["timepoint_name"] = pd.Series(pathway_space2.index.str.split("-"), index=pathway_space2.index).apply(lambda x: x[1]).astype("category")
+
+    a = pathway_space2[pathway_space2['timepoint_name'] == "after_Ibrutinib"].drop("timepoint_name", axis=1).sort_index().reset_index(drop=True)
+    b = pathway_space2[pathway_space2['timepoint_name'] == "before_Ibrutinib"].drop("timepoint_name", axis=1).sort_index().reset_index(drop=True)
+
+    abs_diff = a - b
+    abs_diff.index = pathway_space2.index.str.extract("(.*)-.*", expand=False).drop_duplicates()
+    abs_diff.T.to_csv(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.differential.patient_specific.abs_diff.csv"))
 
     # vizualize in heatmaps
-    fig = sns.clustermap(pathway_space3.T[pathway_space3.sum(0) != 0].T, figsize=(20, 8))
-    for tick in fig.ax_heatmap.get_xticklabels():
-        tick.set_rotation(90)
-    for tick in fig.ax_heatmap.get_yticklabels():
-        tick.set_rotation(0)
-    # fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.mean_concentrations.timepoint_fold_change.svg"), bbox_inches='tight')
-    fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.mean_concentrations.timepoint_fold_change.png"), bbox_inches='tight', dpi=300)
-    fig = sns.clustermap(pathway_space3.T[pathway_space3.sum(0) != 0].T, figsize=(20, 8), z_score=1)
-    for tick in fig.ax_heatmap.get_xticklabels():
-        tick.set_rotation(90)
-    for tick in fig.ax_heatmap.get_yticklabels():
-        tick.set_rotation(0)
-    # fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.mean_concentrations.timepoint_fold_change.z_score.svg"), bbox_inches='tight')
-    fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.mean_concentrations.timepoint_fold_change.z_score.png"), bbox_inches='tight', dpi=300)
-    fig = sns.clustermap(new_drugs3, figsize=(20, 8))
-    for tick in fig.ax_heatmap.get_xticklabels():
-        tick.set_rotation(90)
-    for tick in fig.ax_heatmap.get_yticklabels():
-        tick.set_rotation(0)
-    # fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.new_drugs.mean_concentrations.timepoint_fold_change.svg"), bbox_inches='tight')
-    fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.new_drugs.mean_concentrations.timepoint_fold_change.png"), bbox_inches='tight', dpi=300)
-    fig = sns.clustermap(new_drugs3.T[new_drugs3.sum(0) != 0].T, figsize=(20, 8), z_score=1)
-    for tick in fig.ax_heatmap.get_xticklabels():
-        tick.set_rotation(90)
-    for tick in fig.ax_heatmap.get_yticklabels():
-        tick.set_rotation(0)
-    # fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.new_drugs.mean_concentrations.timepoint_fold_change.z_score.svg"), bbox_inches='tight')
-    fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.new_drugs.mean_concentrations.timepoint_fold_change.z_score.png"), bbox_inches='tight', dpi=300)
+    g = sns.clustermap(abs_diff.dropna(), figsize=(20, 8))
+    g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0, fontsize=6)
+    g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90, fontsize=6)
+    g.fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.differential.abs_diff.svg"), bbox_inches='tight', dpi=300)
 
-    # correlate samples in pathway space
-    fig = sns.clustermap(pathway_space3[pathway_space3.sum(1) != 0].T.corr(), figsize=(8, 8))
-    for tick in fig.ax_heatmap.get_xticklabels():
-        tick.set_rotation(90)
-    for tick in fig.ax_heatmap.get_yticklabels():
-        tick.set_rotation(0)
-    fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.mean_concentrations.timepoint_fold_change.pearson.png"), dpi=300, bbox_inches='tight')
-    # fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.svg"), bbox_inches='tight')
+    # correlate patients in pathway space
+    g = sns.clustermap(abs_diff.dropna().T.corr(), figsize=(8, 8), xticklabels=False)
+    g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+    g.fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.differential.abs_diff.patient_correlation.svg"), bbox_inches='tight', dpi=300)
 
-    # Connect pharmacoscopy pathway-level sensitivities with ATAC-seq
-    pharma = pathway_space2.reset_index()
-    enrichr = pd.read_csv(os.path.join("results", "interaction", "interaction.diff_regions.enrichr.csv"))
-    atac = enrichr[enrichr.gene_set_library == 'KEGG_2016']
-    atac.loc[:, 'kegg_pathway_name'] = pd.Series(atac['description'].str.split("_")).apply(pd.Series)[0]
-    ids = pd.Series(atac['patient'].str.split(".")).apply(pd.Series)[[2, 3]]
-    atac.loc[:, 'patient_id'] = pd.Series(ids[2].str.split("_")).apply(pd.Series)[1]
-    atac.loc[:, 'direction'] = ids[3]
-    atac = atac[atac['kegg_pathway_name'].isin(pathway_space3.columns)].set_index('kegg_pathway_name')
-
-    res = pd.DataFrame()
-    color = iter(cm.rainbow(np.linspace(0, 1, 50)))
-    for patient_id in pharma['patient_id'].drop_duplicates().sort_values():
-        for timepoint in pharma['timepoint'].drop_duplicates().sort_values(ascending=False):
-            pharma_path = pharma.loc[(
-                (pharma['patient_id'] == patient_id) &
-                (pharma['timepoint'] == timepoint)), :].drop(['patient_id', 'timepoint'], axis=1).T.squeeze().drop_duplicates()
-            for metric in ['p_value', 'z_score', 'combined_score']:
-                print(patient_id, timepoint, metric)
-
-                atac_path = atac.loc[(
-                    (atac['patient_id'] == patient_id)),  # &
-                    # (atac['timepoint'] == timepoint)),
-                    metric].squeeze().drop_duplicates()
-                p = pd.merge(pharma_path.reset_index(), atac_path.reset_index(), on='kegg_pathway_name').set_index('kegg_pathway_name')
-                p.columns = ['pharma', 'atac']
-
-                cor = scipy.stats.pearsonr(p['pharma'], p['atac'])[0]
-
-                if metric == "combined_score":
-                    plt.scatter(np.log2(p['pharma']), np.log2(1 + p['atac']), alpha=0.1, color=color.next())
-
-                res = res.append(pd.Series([patient_id, timepoint, metric, cor]), ignore_index=True)
-        axis[i].set_title(" ".join([patient_id, timepoint]))
-        i += 1
-    fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.measured_vs_predicted.scatter.svg"), bbox_inches='tight')
+    # correlate pathways across patients
+    g = sns.clustermap(abs_diff.dropna().corr(), figsize=(20, 20), xticklabels=False)
+    g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0, fontsize=6)
+    g.fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.differential.abs_diff.pathway_correlation.svg"), bbox_inches='tight', dpi=300)
 
 
 def atac_to_pathway(analysis, samples=None):
     """
     Quantify the activity of each pathway by the accessibility of the regulatory elements of its genes.
     """
+
+    def z_score(x):
+        return (x - x.mean()) / x.std()
+
     from bioservices.kegg import KEGG
     import scipy
 
@@ -3223,74 +3209,134 @@ def atac_to_pathway(analysis, samples=None):
         # mean of reg. elements of all genes annoted as overlaping TSSs
         index = chrom_annot.loc[
             (
-                (chrom_annot['gene_name'].isin(pathway_genes[pathway])) &
-                (chrom_annot['genomic_region'] == "tss2kb")  # &
+                (chrom_annot['gene_name'].isin(pathway_genes[pathway]))  # &
+                # (chrom_annot['genomic_region'] == "tss2kb")  # &
                 # (chrom_annot['mean'] > 2)
             ),
             'gene_name'
         ].index
         q = cov.ix[index]
-        path_cov[pathway] = q[[s.name for s in analysis.samples]].mean(axis=0)
-
+        path_cov[pathway] = (q[[s.name for s in samples]].mean(axis=0) / cov[[s.name for s in samples]].sum(axis=0)) * 1e6
     path_cov = path_cov.T.dropna().T
 
-    # # Visualize
-    # fig = sns.clustermap(path_cov, figsize=(30, 8))
-    # for tick in fig.ax_heatmap.get_xticklabels():
-    #     tick.set_rotation(90)
-    # for tick in fig.ax_heatmap.get_yticklabels():
-    #     tick.set_rotation(0)
-    # fig.savefig(os.path.join(analysis.results_dir, "pathway.mean_accessibility.png"), bbox_inches="tight", dpi=300)
-    # # fig.savefig(os.path.join(analysis.results_dir, "pathway.mean_accessibility.svg"), bbox_inches="tight")
+    path_cov_z = path_cov.apply(z_score, axis=0)
+    path_cov.T.to_csv(os.path.join(analysis.results_dir, "pathway.sample_accessibility.csv"))
+    path_cov_z.T.to_csv(os.path.join(analysis.results_dir, "pathway.sample_accessibility.z_score.csv"))
 
-    # fig = sns.clustermap(path_cov.T.dropna().T, figsize=(30, 8), z_score=1)
-    # for tick in fig.ax_heatmap.get_xticklabels():
-    #     tick.set_rotation(90)
-    # for tick in fig.ax_heatmap.get_yticklabels():
-    #     tick.set_rotation(0)
-    # fig.savefig(os.path.join(analysis.results_dir, "pathway.mean_accessibility.z_score.png"), bbox_inches="tight", dpi=300)
-    # # fig.savefig(os.path.join(analysis.results_dir, "pathway.mean_accessibility.svg"), bbox_inches="tight")
+    # Visualize
+    # clustered
+    g = sns.clustermap(path_cov_z, figsize=(30, 8), yticklabels=path_cov_z.index.get_level_values("sample_name"))
+    g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0, fontsize=6)
+    g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90, fontsize=6)
+    g.fig.savefig(os.path.join(analysis.results_dir, "pathway.mean_accessibility.svg"), bbox_inches="tight", dpi=300)
+
+    # sorted
+    p = path_cov[path_cov.sum(axis=0).sort_values().index]
+    p = p.ix[p.sum(axis=1).sort_values().index]
+    g = sns.clustermap(p, figsize=(30, 8), yticklabels=p.index.get_level_values("sample_name"), col_cluster=False, row_cluster=False)
+    g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0, fontsize=6)
+    g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90, fontsize=6)
+    g.fig.savefig(os.path.join(analysis.results_dir, "pathway.mean_accessibility.sorted.svg"), bbox_inches="tight", dpi=300)
+
+    #
+
+    # Differential
+    a = path_cov[path_cov.index.get_level_values("timepoint_name") == "after_Ibrutinib"].mean()
+    b = path_cov[path_cov.index.get_level_values("timepoint_name") == "before_Ibrutinib"].mean()
+
+    # scatter
+    from statsmodels.nonparametric.smoothers_lowess import lowess
+    fit = lowess(b, a, return_sorted=False)
+    dist = abs(b - fit)
+    norm = matplotlib.colors.Normalize(vmin=0, vmax=dist.max())
+
+    fig, axis = plt.subplots(1, figsize=(4, 4))
+    axis.scatter(a, b, color=plt.cm.inferno(norm(dist)), alpha=0.8)
+    for l in (fit - b).sort_values().tail(10).index:
+        axis.text(a.ix[l], b.ix[l], l, fontsize=7.5, ha="left")
+    for l in (b - fit).sort_values().tail(10).index:
+        axis.text(a.ix[l], b.ix[l], l, fontsize=7.5, ha="right")
+    axis.set_xlabel("After ibrutinib")
+    axis.set_ylabel("Before ibrutinib")
+    sns.despine(fig)
+    fig.savefig(os.path.join(analysis.results_dir, "pathway.mean_accessibility.scatter.svg"), bbox_inches="tight")
+
+    # rank vs cross-patient sensitivity
+    fc = np.log2(a / b).sort_values()
+    fc.to_csv(os.path.join(analysis.results_dir, "pathway.sample_accessibility.log2_fold_change.csv"))
+    fc = pd.read_csv(os.path.join(analysis.results_dir, "pathway.sample_accessibility.log2_fold_change.csv"), index_col=0, header=None)
+    norm = matplotlib.colors.Normalize(vmin=fc.min(), vmax=fc.max())
+
+    fig, axis = plt.subplots(1, figsize=(4, 4))
+    axis.scatter(fc.rank(), fc, color=plt.cm.inferno(norm(fc)), alpha=0.8)
+    axis.axhline(0, color="black", alpha=0.8, linestyle="--")
+    for l in fc.head(15).index:
+        axis.text(fc.rank().ix[l], fc.ix[l], l, fontsize=5, ha="left")
+    for l in fc.tail(15).index:
+        axis.text(fc.rank().ix[l], fc.ix[l], l, fontsize=5, ha="right")
+    axis.set_xlabel("Rank in change pathway accessibility")
+    axis.set_ylabel("Log2(fold change) in pathway accessibilty (after/before)")
+    sns.despine(fig)
+    fig.savefig(os.path.join(analysis.results_dir, "pathway.mean_accessibility.rank.svg"), bbox_inches="tight")
 
     # Compare with pharmacoscopy
     # annotate atac the same way as pharma
-    ext = pd.Series(path_cov.index.get_level_values("sample_name").str.split("_")).apply(pd.Series)
-    ext.index = path_cov.index
-    path_cov.loc[:, 'patient'] = ext[2].astype('category')
-    path_cov.loc[:, 'timepoint'] = ext[4].astype('category')
-    path_cov = path_cov.set_index(['patient', 'timepoint'])
-    pathway_space = pd.read_csv(os.path.join("results", "pharmacoscopy", "pharmacoscopy.sensitivity.pathway_space.csv"), index_col=0)
-
-    # reduce pharmacoscopy measurements to mean of concentrations
-    s = pd.Series(pathway_space.columns).apply(lambda x: pd.Series(x.split("-")))
-    s.index = pathway_space.columns
-    s.columns = [['patient_id', 'timepoint', 'concentration']]
-    pharma = pathway_space.T.join(s).groupby(['patient_id', 'timepoint']).mean()
+    #
 
     # Connect pharmacoscopy pathway-level sensitivities with ATAC-seq
+
+    # Sample-level
+    # globally
+    atac = path_cov
+    pharma = pd.read_csv(os.path.join("results", "pharmacoscopy", "pharmacoscopy.score.pathway_space.csv"), index_col=0)
+    pharma.loc["patient_id", :] = pd.Series(pharma.columns.str.split("-"), index=pharma.columns).apply(lambda x: x[0]).astype("category")
+    pharma.loc["timepoint_name", :] = pd.Series(pharma.columns.str.split("-"), index=pharma.columns).apply(lambda x: x[1]).astype("category")
+    pharma = pharma.T
+
     res = pd.DataFrame()
+    # color = iter(cm.rainbow(np.linspace(0, 1, 50)))
 
-    fig, axis = plt.subplots(4, 3, sharex=True, sharey=True)
-    axis = axis.flatten()
-    i = 0
-    color = iter(cm.rainbow(np.linspace(0, 1, 50)))
-    for patient_id in pharma.index.levels[0].sort_values():
-        for timepoint in pharma.index.levels[1].sort_values(ascending=False):
-            pharma_path = pharma.ix[patient_id, timepoint].squeeze().drop_duplicates()
-            atac_path = path_cov.ix[patient_id, timepoint].squeeze().drop_duplicates()
+    ps = pharma.index.str.extract("(CLL\d+)-.*").drop_duplicates().sort_values().drop('CLL2').drop('CLL8')
+    ts = pharma.index.str.extract(".*-(.*)").drop_duplicates().sort_values(ascending=False)
+    fig, axis = plt.subplots(len(ts), len(ps), figsize=(len(ps) * 4, len(ts) * 4), sharex=True, sharey=True)
+    for i, patient_id in enumerate(ps):
+        for j, timepoint in enumerate(ts):
             print(patient_id, timepoint)
+            p = pharma[(pharma["patient_id"] == patient_id) & (pharma["timepoint_name"] == timepoint)].sort_index().T
+            a = atac.loc[(atac.index.get_level_values("patient_id") == patient_id) & (atac.index.get_level_values("timepoint_name") == timepoint), :].T.sort_index()
 
-            p = pd.merge(pharma_path.reset_index(), atac_path.reset_index(), on='kegg_pathway_name').set_index('kegg_pathway_name')
-            p.columns = ['pharma', 'atac']
+            p = p.ix[a.index].dropna()
+            a = a.ix[p.index].dropna()
 
-            cor = scipy.stats.pearsonr(p['pharma'], p['atac'])[0]
+            # stat, p_value = scipy.stats.pearsonr(p, a)
+            axis[j][i].scatter(p, a, alpha=0.5)  # , color=color.next())
+            axis[j][i].set_title(" ".join([patient_id, timepoint]))
 
-            axis[i].scatter(np.log2(p['pharma']), np.log2(1 + p['atac']), alpha=0.1, color="blue" if timepoint == "pre" else "green")
+            # res = res.append(pd.Series([patient_id, timepoint, stat, p_value]), ignore_index=True)
+    sns.despine(fig)
+    fig.savefig(os.path.join(analysis.results_dir, "pathway-pharmacoscopy.scatter.png"), bbox_inches='tight', dpi=300)
 
-            res = res.append(pd.Series([patient_id, timepoint, cor]), ignore_index=True)
-        axis[i].set_title(" ".join([patient_id]))
-        i += 1
-    # sns.distplot(res[2], ax=axis[-1])
-    fig.savefig(os.path.join("pharmacoscopy.sensitivity.measured_vs_predicted.scatter.svg"), bbox_inches='tight')
+
+    # Patient-level
+    # globally
+    pharma_global = pd.read_csv(os.path.join("results", "pharmacoscopy", "pharmacoscopy.sensitivity.pathway_space.differential.abs_diff.csv"), index_col=0, header=None, squeeze=True)
+    atac_global = fc
+
+    pharma_global = pharma_global.ix[atac_global.index]
+    atac_global = atac_global.ix[pharma_global.index]
+
+    plt.scatter(pharma_global, atac_global)
+
+    # individually
+    pharma_patient = pd.read_csv(os.path.join("results", "pharmacoscopy", "pharmacoscopy.sensitivity.pathway_space.differential.patient_specific.abs_diff.csv"), index_col=0)
+    a = path_cov[path_cov.index.get_level_values("timepoint_name") == "after_Ibrutinib"].reset_index(drop=True)
+    b = path_cov[path_cov.index.get_level_values("timepoint_name") == "before_Ibrutinib"].reset_index(drop=True)
+    atac_patient = a - b
+    atac_patient.index = pd.Series(path_cov.index.get_level_values("patient_id").drop_duplicates())
+
+
+    pharma_patient = pharma_patient.T.ix[atac_patient.columns]
+    atac_patient = atac_patient.ix[pharma_patient.index]
 
 
 def name_to_repr(name):
