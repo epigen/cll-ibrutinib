@@ -3175,6 +3175,9 @@ def atac_to_pathway(analysis, samples=None):
 
     from bioservices.kegg import KEGG
     import scipy
+    from scipy.stats import norm
+    from statsmodels.sandbox.stats.multicomp import multipletests
+    from statsmodels.nonparametric.smoothers_lowess import lowess
 
     if samples is None:
         samples = analysis.samples
@@ -3198,30 +3201,51 @@ def atac_to_pathway(analysis, samples=None):
     # Get accessibility for each regulatory element assigned to each gene in each pathway
     # Reduce values per gene
     # Reduce values per pathway
-    cov = analysis.accessibility[[s.name for s in samples]]
+    pc_samples = [s for s in samples if hasattr(s, "pharmacoscopy_id")]
+    cov = analysis.accessibility[[s.name for s in pc_samples]]
     chrom_annot = analysis.coverage_annotated
     path_cov = pd.DataFrame()
     path_cov.columns.name = 'kegg_pathway_name'
     for pathway in pathway_genes.keys():
         print(pathway)
         # mean of all reg. elements of all genes
-        # path_cov[pathway] = cov.ix[cov['gene_name'][cov['gene_name'].isin(pathway_genes[pathway])].index][[s.name for s in analysis.samples]].mean(axis=0)
-        # mean of reg. elements of all genes annoted as overlaping TSSs
-        index = chrom_annot.loc[
-            (
-                (chrom_annot['gene_name'].isin(pathway_genes[pathway]))  # &
-                # (chrom_annot['genomic_region'] == "tss2kb")  # &
-                # (chrom_annot['mean'] > 2)
-            ),
-            'gene_name'
-        ].index
+        index = chrom_annot.loc[(chrom_annot['gene_name'].isin(pathway_genes[pathway])), 'gene_name'].index
         q = cov.ix[index]
-        path_cov[pathway] = (q[[s.name for s in samples]].mean(axis=0) / cov[[s.name for s in samples]].sum(axis=0)) * 1e6
+        path_cov[pathway] = (q[[s.name for s in pc_samples]].mean(axis=0) / cov[[s.name for s in pc_samples]].sum(axis=0)) * 1e6
     path_cov = path_cov.T.dropna().T
 
     path_cov_z = path_cov.apply(z_score, axis=0)
     path_cov.T.to_csv(os.path.join(analysis.results_dir, "pathway.sample_accessibility.csv"))
     path_cov_z.T.to_csv(os.path.join(analysis.results_dir, "pathway.sample_accessibility.z_score.csv"))
+    path_cov = pd.read_csv(os.path.join(analysis.results_dir, "pathway.sample_accessibility.csv"), index_col=0, header=range(24)).T
+    path_cov_z = pd.read_csv(os.path.join(analysis.results_dir, "pathway.sample_accessibility.z_score.csv"), index_col=0, header=range(24)).T
+
+    # Get null distribution from permutations
+    n_perm = 100
+    pathway_sizes = pd.Series({k: len(v) for k, v in pathway_genes.items()}).sort_values()
+    pathway_sizes.name = "pathway_size"
+    all_genes = [j for i in pathway_genes.values() for j in i]
+
+    r_fcs = list()
+    for i in range(n_perm):
+        r_path_cov = pd.DataFrame()
+        r_path_cov.columns.name = 'kegg_pathway_name'
+        for pathway in pathway_genes.keys():
+            print(i, pathway)
+            # choose same number of random genes from all pathways
+            r = np.random.choice(all_genes, pathway_sizes.ix[pathway])
+            index = chrom_annot.loc[(chrom_annot['gene_name'].isin(r)), 'gene_name'].index
+            q = cov.ix[index]
+            r_path_cov[pathway] = (q[[s.name for s in samples]].mean(axis=0) / cov[[s.name for s in samples]].sum(axis=0)) * 1e6
+
+        r_path_cov = r_path_cov.T.dropna().T
+        a = r_path_cov[r_path_cov.index.get_level_values("timepoint_name") == "after_Ibrutinib"].mean()
+        b = r_path_cov[r_path_cov.index.get_level_values("timepoint_name") == "before_Ibrutinib"].mean()
+        r_fcs.append(a - b)
+    pickle.dump(r_fcs, open(os.path.join("metadata", "pathway.sample_accessibility.random.fold_changes.pickle"), "wb"))
+    r_fcs = pickle.load(open(os.path.join("metadata", "pathway.sample_accessibility.random.fold_changes.pickle"), "rb"))
+
+    [sns.distplot(x) for x in r_fcs]
 
     # Visualize
     # clustered
@@ -3241,17 +3265,31 @@ def atac_to_pathway(analysis, samples=None):
     #
 
     # Differential
+    # fold_change
     a = path_cov[path_cov.index.get_level_values("timepoint_name") == "after_Ibrutinib"].mean()
+    a.name = "after_Ibrutinib"
     b = path_cov[path_cov.index.get_level_values("timepoint_name") == "before_Ibrutinib"].mean()
+    b.name = "before_Ibrutinib"
+    fc = (a - b).sort_values()
+    fc.name = "fold_change"
+
+    # p-values & q-values
+    params = norm.fit([j for i in r_fcs for j in i])
+    p_values = pd.Series(norm.sf(abs(fc), *params) * 2, index=fc.index, name="p_value")
+    q_values = pd.Series(multipletests(p_values, method="bonferroni")[1], index=fc.index, name="q_value")
+    # add number of genes per pathway
+    changes = pd.DataFrame([pathway_sizes, a, b, fc, p_values, q_values]).T
+    changes.index.name = "pathway"
+    # save
+    changes.sort_values("p_value").to_csv(os.path.join(analysis.results_dir, "pathway.sample_accessibility.size-log2_fold_change-p_value.q_value.csv"))
 
     # scatter
-    from statsmodels.nonparametric.smoothers_lowess import lowess
     fit = lowess(b, a, return_sorted=False)
     dist = abs(b - fit)
-    norm = matplotlib.colors.Normalize(vmin=0, vmax=dist.max())
+    normalizer = matplotlib.colors.Normalize(vmin=0, vmax=dist.max())
 
     fig, axis = plt.subplots(1, figsize=(4, 4))
-    axis.scatter(a, b, color=plt.cm.inferno(norm(dist)), alpha=0.8)
+    axis.scatter(a, b, color=plt.cm.inferno(normalizer(dist)), alpha=0.8)
     for l in (fit - b).sort_values().tail(10).index:
         axis.text(a.ix[l], b.ix[l], l, fontsize=7.5, ha="left")
     for l in (b - fit).sort_values().tail(10).index:
@@ -3261,14 +3299,44 @@ def atac_to_pathway(analysis, samples=None):
     sns.despine(fig)
     fig.savefig(os.path.join(analysis.results_dir, "pathway.mean_accessibility.scatter.svg"), bbox_inches="tight")
 
-    # rank vs cross-patient sensitivity
-    fc = np.log2(a / b).sort_values()
-    fc.to_csv(os.path.join(analysis.results_dir, "pathway.sample_accessibility.log2_fold_change.csv"))
-    fc = pd.read_csv(os.path.join(analysis.results_dir, "pathway.sample_accessibility.log2_fold_change.csv"), index_col=0, header=None)
-    norm = matplotlib.colors.Normalize(vmin=fc.min(), vmax=fc.max())
+    # volcano
+    fit = lowess(-np.log10(changes['q_value']), changes['fold_change'], return_sorted=False)
+    dist = abs(-np.log10(changes['q_value']) - fit)
+    normalizer = matplotlib.colors.Normalize(vmin=0, vmax=dist.max())
 
     fig, axis = plt.subplots(1, figsize=(4, 4))
-    axis.scatter(fc.rank(), fc, color=plt.cm.inferno(norm(fc)), alpha=0.8)
+    axis.scatter(changes['fold_change'], -np.log10(changes['q_value']), color=plt.cm.inferno(normalizer(dist)), alpha=0.8)
+    for l in (fit - b).sort_values().tail(10).index:
+        axis.text(a.ix[l], b.ix[l], l, fontsize=7.5, ha="left")
+    for l in (b - fit).sort_values().tail(10).index:
+        axis.text(a.ix[l], b.ix[l], l, fontsize=7.5, ha="right")
+    axis.set_xlabel("After ibrutinib")
+    axis.set_ylabel("Before ibrutinib")
+    sns.despine(fig)
+    fig.savefig(os.path.join(analysis.results_dir, "pathway.mean_accessibility.volcano.svg"), bbox_inches="tight")
+
+    # maplot
+    fit = lowess(b, a, return_sorted=False)
+    dist = abs(b - fit)
+    normalizer = matplotlib.colors.Normalize(vmin=0, vmax=dist.max())
+
+    fig, axis = plt.subplots(1, figsize=(4, 4))
+    axis.scatter(a, b, color=plt.cm.inferno(normalizer(dist)), alpha=0.8)
+    for l in (fit - b).sort_values().tail(10).index:
+        axis.text(a.ix[l], b.ix[l], l, fontsize=7.5, ha="left")
+    for l in (b - fit).sort_values().tail(10).index:
+        axis.text(a.ix[l], b.ix[l], l, fontsize=7.5, ha="right")
+    axis.set_xlabel("After ibrutinib")
+    axis.set_ylabel("Before ibrutinib")
+    sns.despine(fig)
+    fig.savefig(os.path.join(analysis.results_dir, "pathway.mean_accessibility.maplot.svg"), bbox_inches="tight")
+
+    # rank vs cross-patient sensitivity
+    changes = pd.read_csv(os.path.join(analysis.results_dir, "pathway.sample_accessibility.size-log2_fold_change-p_value.q_value.csv"), index_col=0, header=None)
+    normalizer = matplotlib.colors.Normalize(vmin=fc.min(), vmax=fc.max())
+
+    fig, axis = plt.subplots(1, figsize=(4, 4))
+    axis.scatter(fc.rank(), fc, color=plt.cm.inferno(normalizer(fc)), alpha=0.8)
     axis.axhline(0, color="black", alpha=0.8, linestyle="--")
     for l in fc.head(15).index:
         axis.text(fc.rank().ix[l], fc.ix[l], l, fontsize=5, ha="left")
@@ -3337,225 +3405,6 @@ def atac_to_pathway(analysis, samples=None):
 
     pharma_patient = pharma_patient.T.ix[atac_patient.columns]
     atac_patient = atac_patient.ix[pharma_patient.index]
-
-
-def name_to_repr(name):
-    return "_".join([name.split("_")[0]] + [name.split("_")[2]] + name.split("_")[3:4])
-
-
-def name_to_id(name):
-    """This returns joined patient and sample IDs"""
-    return "_".join([name.split("_")[2]] + name.split("_")[3:4])
-
-
-def name_to_patient_id(name):
-    return name.split("_")[2]
-
-
-def name_to_sample_id(name):
-    return name.split("_")[3]
-
-
-def samples_to_color(samples, trait="IGHV"):
-    # unique color per patient
-    if trait == "patient":
-        patients = set([sample.patient_id for sample in samples])
-        color_dict = cm.Paired(np.linspace(0, 1, len(patients)))
-        color_dict = dict(zip(patients, color_dict))
-        return [color_dict[sample.patient_id] for sample in samples]
-    # rainbow (unique color per sample)
-    elif trait == "unique_sample":
-        return cm.Paired(np.linspace(0, 1, len(samples)))
-        # gender
-    elif trait == "gender":
-        colors = list()
-        for sample in samples:
-            if sample.patient_gender == "F":
-                colors.append('red')
-            elif sample.patient_gender == "M":
-                colors.append('blue')
-            else:
-                colors.append('gray')
-        return colors
-    # disease at diagnosis time
-    elif trait == "disease":
-        colors = list()
-        for sample in samples:
-            if sample.diagnosis_disease == "CLL":
-                colors.append('#A6CEE3')
-            elif sample.diagnosis_disease == "MBL":
-                colors.append('#F17047')
-            elif sample.diagnosis_disease == "SLL":
-                colors.append('#482115')
-            else:
-                colors.append('grey')
-        return colors
-    # dependent on trait threshold
-    elif trait in ["IGHV", "under_treatment"]:
-        # This uses sns colorblind pallete
-        colors = list()
-        for sample in samples:
-            if getattr(sample, trait) == 1:
-                colors.append(sns.color_palette("colorblind")[0])  # blue #0072b2
-            elif getattr(sample, trait) == 0:
-                colors.append(sns.color_palette("colorblind")[2])  # vermillion #d55e00
-            else:
-                colors.append('gray')
-        return colors
-    # unique color per patient
-    if trait in ["timepoint_name"]:
-        uniques = set([getattr(sample, trait) for sample in samples])
-        color_dict = cm.Paired(np.linspace(0, 1, len(uniques)))
-        color_dict = dict(zip(uniques, color_dict))
-        return [color_dict[getattr(sample, trait)] for sample in samples]
-    # IGHV homology color scale from min to max
-    if trait in ["ighv_homology"]:
-        vmin = min([getattr(s, trait) for s in samples])
-        # This uses sns summer colormap
-        cmap = plt.get_cmap('summer')
-        # scale colormap to min and max ighv homology
-        norm = matplotlib.colors.Normalize(vmin=vmin, vmax=100)
-        m = cm.ScalarMappable(norm=norm, cmap=cmap)
-        # get colors acordingly
-        colors = list()
-        for sample in samples:
-            if vmin <= getattr(sample, trait) <= 100:
-                colors.append(m.to_rgba(getattr(sample, trait)))
-            else:
-                colors.append('gray')
-        return colors
-    if trait in ["batch"]:
-        import re
-        # get set of experiemnt batches
-        n = set([re.sub(r"(ATAC\d+)[s-].*", r"\1", s.experiment_name) for s in samples])
-        # get mapping of batch:color
-        cmap = dict(zip(n, sns.color_palette("cubehelix", len(n))))
-        colors = list()
-        for s in samples:
-            colors.append(cmap[re.sub(r"(ATAC\d+)[s-].*", r"\1", s.experiment_name)])
-        return colors
-    else:
-        raise ValueError("trait %s is not valid" % trait)
-
-
-def all_sample_colors(samples, order=""):
-    return [
-        samples_to_color(samples, "patient"),
-        samples_to_color(samples, "gender"),
-        samples_to_color(samples, "disease"),
-        samples_to_color(samples, "IGHV"),
-        samples_to_color(samples, "under_treatment"),
-        samples_to_color(samples, "timepoint_name"),
-        samples_to_color(samples, "ighv_homology"),
-        samples_to_color(samples, "batch"),
-    ]
-
-
-def samples_to_symbol(samples, method="unique"):
-    from itertools import cycle
-    valid = ['D', 'H', '^', 'd', 'h', 'o', 'p', 's', 'v']
-    c = cycle([x for x in matplotlib.markers.MarkerStyle.markers.items() if x[0] in valid])
-
-    # unique color per patient
-    if method == "unique":
-        # per patient
-        patients = set(sample.patient_id for sample in samples)
-        symbol_dict = [c.next()[0] for _ in range(len(patients))]
-        symbol_dict = dict(zip(patients, symbol_dict))
-        return [symbol_dict[sample.patient_id] for sample in samples]
-    # rainbow (unique color per sample)
-    elif method == "unique_sample":
-        return [c.next()[0] for sample in samples]
-    else:
-        raise ValueError("Method %s is not valid" % method)
-
-
-def annotate_clinical_traits(samples):
-    # Annotate traits
-    chemo_drugs = ["Chlor", "Chlor R", "B Of", "BR", "CHOPR"]  # Chemotherapy
-    target_drugs = ["Alemtuz", "Ibrutinib"]  # targeted treatments
-    muts = ["del13", "del11", "tri12", "del17"]  # chrom abnorms
-    muts += ["SF3B1", "ATM", "NOTCH1", "BIRC3", "BCL2", "TP53", "MYD88", "CHD2", "NFKIE"]  # mutations
-    for s in samples:
-        # Gender
-        s.gender = 1 if s.patient_gender == "M" else 0 if s.patient_gender == "F" else pd.np.nan
-        # IGHV mutation status
-        s.IGHV = s.ighv_mutation_status
-
-    # Annotate samples which are under treament but with different types
-    for sample in samples:
-        if not sample.under_treatment:
-            sample.chemo_treated = pd.np.nan
-            sample.target_treated = pd.np.nan
-        else:
-            sample.chemo_treated = 1 if sample.treatment_regimen in chemo_drugs else 0
-            sample.target_treated = 1 if sample.treatment_regimen in target_drugs else 0
-        for mut in muts:
-            setattr(sample, mut, 1 if sample.mutations is not pd.np.nan and mut in str(sample.mutations) else 0)
-
-    return samples
-
-
-def annotate_disease_treatments(samples):
-    """
-    Annotate samples with timepoint, treatment_status, treatment_regimen
-    """
-    def string_to_date(string):
-        if type(string) is str:
-            if len(string) == 10:
-                return pd.to_datetime(string, format="%d/%m/%Y")
-            if len(string) == 7:
-                return pd.to_datetime(string, format="%m/%Y")
-            if len(string) == 4:
-                return pd.to_datetime(string, format="%Y")
-        return pd.NaT
-
-    new_samples = list()
-
-    for sample in samples:
-        if sample.cell_line == "CLL":
-            # Get sample collection date
-            sample.collection_date = string_to_date(sample.sample_collection_date)
-            # Get diagnosis date
-            sample.diagnosis_date = string_to_date(sample.diagnosis_date)
-            # Get diagnosis disease
-            sample.primary_CLL = 1 if sample.diagnosis_disease == "CLL" else 0  # binary label useful for later
-
-            # Get time since diagnosis
-            sample.time_since_diagnosis = sample.collection_date - sample.diagnosis_date
-
-            # Annotate treatment type, time since treatment
-            if sample.under_treatment:
-                sample.time_since_treatment = sample.collection_date - string_to_date(sample.treatment_date)
-
-        # Append sample
-        new_samples.append(sample)
-    return new_samples
-
-
-def annotate_samples(samples, attrs):
-    new_samples = list()
-    for sample in samples:
-        # If any attribute is not set, set to NaN
-        for attr in attrs:
-            if not hasattr(sample, attr):
-                setattr(sample, attr, pd.np.nan)
-        new_samples.append(sample)
-
-    # read in file with IGHV group of samples selected for ChIPmentation
-    selected = pd.read_csv(os.path.join("metadata", "selected_samples.tsv"), sep="\t").astype(str)
-    # annotate samples with the respective IGHV group
-    for sample in samples:
-        group = selected[
-            (selected["patient_id"].astype(str) == str(sample.patient_id)) &
-            (selected["sample_id"].astype(str) == str(sample.sample_id))
-        ]["sample_cluster"]
-        if len(group) == 1:
-            sample.ighv_group = group.squeeze()
-        else:
-            sample.ighv_group = pd.np.nan
-
-    return annotate_clinical_traits(annotate_disease_treatments(new_samples))
 
 
 def state_enrichment_overlap(n=100):
@@ -3993,6 +3842,8 @@ def enrichr(dataframe, gene_set_libraries=None, kind="genes"):
 
         # Put in dataframe
         res = pd.DataFrame([pd.Series(s) for s in res[gene_set_library]])
+        if res.shape[0] == 0:
+            continue
         if len(res.columns) == 7:
             res.columns = ["rank", "description", "p_value", "z_score", "combined_score", "genes", "adjusted_p_value"]
         elif len(res.columns) == 9:
