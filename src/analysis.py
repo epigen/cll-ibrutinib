@@ -1171,95 +1171,6 @@ class Analysis(object):
                 tick.set_rotation(0)
             g.fig.savefig(os.path.join("results", "{}.PCA.PC_pvalues.enrichr_enrichments.{}.z_score.svg".format(self.name, gene_set_library)), bbox_inches="tight", dpi=300)
 
-    def pathways(self):
-
-        gene_lists = {
-            "BCR": [
-                "LYN", "VAV3", "CD72", "SYK", "CD81", "PRKCB", "DAPP1",
-                "NFATC1", "FOS", "PIK3R1", "MALT1", "PIK3CG", "VAV2",
-                "RASGRP3", "INPP5D", "BLNK", "AKT1", "MAPK1", "PTPN6",
-                "KRAS", "SOS1", "PIK3AP1", "SOS2"] + [
-                "CD81", "PIK3CB", "PIK3R1", "PIK3CG", "RASGRP3",
-                "IKBKB", "CD79A", "PPP3CC", "PPP3R2", "AKT2", "AKT3",
-                "PLCG2", "RAC3", "MAPK3", "LYN", "VAV3", "MAP2K2",
-                "PRKCB", "NFATC3", "NFATC2", "NFATC1", "VAV2", "NFKBIE",
-                "SOS1", "PIK3AP1", "CD22", "CARD11"],
-            "FOXO": [
-                "PRKAA1", "CDKN1B", "AGAP2", "PTEN", "PIK3R1", "FOXO3",
-                "FOXO1", "PIK3CG", "IGF1R", "S1PR1", "AKT1", "MAPK1",
-                "SMAD4", "GABARAPL1", "CDKN2B", "SMAD3", "HOMER1", "HOMER2",
-                "GADD45A", "SOD2", "TGFBR1", "TGFBR2", "BCL6", "CCNG2", "MDM2",
-                "SGK3", "KRAS", "SGK1", "SOS1", "SOS2"] + [
-                "ROCK2", "NPR1", "ITPR1", "ATP2A3", "ITPR2", "ATP2A2", "IRS2",
-                "CACNA1D", "ATP1A1", "PIK3R1", "PIK3CB", "ADRB2", "MYLK3", "PIK3CG",
-                "MYLK", "PPP1CC", "PPP3R2", "PPP3CC", "CREB3L1", "AKT2", "AKT3",
-                "KCNMB2", "CACNA1S", "MAPK3", "MEF2A", "TRPC6", "MAP2K2", "PRKCE",
-                "NFATC3", "ATP2B4", "NFATC2", "NFATC1", "ATP2B2", "ATP1B1", "ADRA2B",
-                "ADRA2A", "PPIF", "VDAC3", "VDAC2", "GTF2IRD1", "MRVI1", "PDE5A", "CREB5"],
-            "Apoptosis": [
-                "HRK", "PARP4", "GADD45A", "ITPR1", "ITPR2", "PIK3R1", "CFLAR",
-                "FOS", "PIK3CG", "LMNB1", "CASP7", "CASP8", "LMNA", "CAPN2",
-                "FAS", "AKT1", "PMAIP1", "MAPK1", "KRAS", "BIRC2", "CTSC",
-                "MAP3K5", "BIRC3", "CTSB"],
-            "Focal Adhesion": [
-                "FLT1", "PIK3CB", "ARHGAP5", "MYLK3", "PIK3CG", "MYLK", "IGF1R",
-                "PPP1CC", "AKT2", "AKT3", "RAC3", "ITGB8", "VAV3", "PRKCB", "ITGA2",
-                "ITGA1", "ACTN4", "PGF", "VAV2", "MYL5", "COL4A2", "COL4A1", "MYL2",
-                "ITGA7", "ITGA6", "TLN2", "SOS1", "BIRC2", "ROCK2", "SRC", "LAMA3",
-                "PIK3R1", "EGFR", "PAK1", "SPP1", "PAK6", "FLNB", "FYN", "FLNC",
-                "MAPK3", "EGF", "LAMB4", "FN1", "VEGFC", "PARVB", "PTK2", "VEGFA",
-                "DIAPH1", "COL1A2", "PARVG", "BCL2", "CTNNB1"
-            ]
-        }
-
-        df = self.coverage_annotated
-
-        for name, genes in gene_lists.items():
-            # get regions
-            path_regions = df[df["gene_name"].str.contains("|".join(list(set(genes))))][["gene_name"] + [s.name for s in self.samples]]
-            # reduce per gene
-            path_genes = path_regions.groupby(["gene_name"]).mean()
-
-            g = sns.clustermap(
-                path_regions.drop("gene_name", axis=1),
-                xticklabels=[" - ".join([s.patient_id, str(getattr(s, "timepoint_name")), str(getattr(s, "treatment_response.1"))]) for s in self.samples],
-                z_score=0,
-                figsize=(10, 15))
-            plt.setp(g.ax_heatmap.xaxis.get_majorticklabels(), rotation=90)
-            plt.setp(g.ax_heatmap.yaxis.get_majorticklabels(), rotation=0)
-            g.savefig(os.path.join(self.results_dir, "gene_lists.regions.%s.regions.png" % name), bbox_inches="tight", dpi=300)
-
-            g = sns.clustermap(
-                path_genes,
-                xticklabels=[" - ".join([s.patient_id, str(getattr(s, "timepoint_name")), str(getattr(s, "treatment_response.1"))]) for s in self.samples],
-                z_score=0,
-                figsize=(10, 15))
-            plt.setp(g.ax_heatmap.xaxis.get_majorticklabels(), rotation=90)
-            plt.setp(g.ax_heatmap.yaxis.get_majorticklabels(), rotation=0)
-            g.savefig(os.path.join(self.results_dir, "gene_lists.genes.%s.genes.png" % name), bbox_inches="tight", dpi=300)
-
-        g = sns.clustermap(
-            path_regions.drop("gene_name", axis=1),
-            xticklabels=[" - ".join([s.patient_id, str(getattr(s, "timepoint_name")), str(getattr(s, "treatment_response.1"))]) for s in self.samples],
-            z_score=0,
-            figsize=(10, 15))
-        plt.setp(g.ax_heatmap.xaxis.get_majorticklabels(), rotation=90)
-        plt.setp(g.ax_heatmap.yaxis.get_majorticklabels(), rotation=0)
-        g.savefig(os.path.join(self.results_dir, "gene_lists.regions.all.regions.png"), bbox_inches="tight", dpi=300)
-
-        # get regions
-        path_regions = df[df["gene_name"].str.contains("|".join(list(set(sum(gene_lists.values(), [])))))][["gene_name"] + [s.name for s in self.samples]]
-        # reduce per gene
-        path_genes = path_regions.groupby(["gene_name"]).mean()
-        g = sns.clustermap(
-            path_genes,
-            xticklabels=[" - ".join([s.patient_id, str(getattr(s, "timepoint_name")), str(getattr(s, "treatment_response.1"))]) for s in self.samples],
-            z_score=0,
-            figsize=(10, 15))
-        plt.setp(g.ax_heatmap.xaxis.get_majorticklabels(), rotation=90)
-        plt.setp(g.ax_heatmap.yaxis.get_majorticklabels(), rotation=0)
-        g.savefig(os.path.join(self.results_dir, "gene_lists.genes.all.genes.png"), bbox_inches="tight", dpi=300)
-
     def differential_region_analysis(
             self, samples, trait="ibrutinib_treatment",
             variables=["atac_seq_batch", "patient_gender", "ighv_mutation_status", "timepoint_name", "ibrutinib_treatment"],
@@ -1351,16 +1262,6 @@ class Analysis(object):
             t.set_rotation(0)
         sns.despine(fig)
         fig.savefig(os.path.join(output_dir, "%s.%s.number_differential.split_percentage.svg" % (output_suffix, trait)), bbox_inches="tight")
-
-        # # Pyupset
-        # import pyupset as pyu
-        # # Build dict
-        # diff["comparison_direction"] = diff[["comparison", "direction"]].apply(string.join, axis=1)
-        # df_dict = {group: diff[diff["comparison_direction"] == group].reset_index()[['index']] for group in set(diff["comparison_direction"])}
-        # # Plot
-        # plot = pyu.plot(df_dict, unique_keys=['index'], inters_size_bounds=(10, np.inf))
-        # plot['figure'].set_size_inches(20, 8)
-        # plot['figure'].savefig(os.path.join(output_dir, "%s.%s.number_differential.upset.svg" % (output_suffix, trait)), bbox_inched="tight")
 
         # Pairwise scatter plots
         n_rows = n_cols = int(np.ceil(len(comparisons) / 2.))
@@ -2558,7 +2459,7 @@ def annotate_drugs(analysis, sensitivity):
     # score interactions
     annot['interaction_score'] = annot['interaction_types'].apply(lambda x: score_map[x])
     annot.to_csv(os.path.join("metadata", "drugs_annotated.csv"), index=False)
-    annot = pd.read_csv(os.path.join("metadata", "drugs_annotated.csv"), index=False)
+    annot = pd.read_csv(os.path.join("metadata", "drugs_annotated.csv"))
     analysis.drug_annotation = annot
 
     # Create directed Drug -> Gene network
@@ -3001,6 +2902,7 @@ def pharmacoscopy(analysis):
                 new_drugs[sample_id] = new_drug_space
     pathway_space.to_csv(os.path.join(output_dir, "pharmacoscopy.score.pathway_space.csv"))
     new_drugs.to_csv(os.path.join(output_dir, "pharmacoscopy.score.new_drug_space.csv"))
+    pathway_space = pd.read_csv(os.path.join(output_dir, "pharmacoscopy.score.pathway_space.csv"), index_col=0)
 
     # Plots
 
@@ -3101,40 +3003,127 @@ def pharmacoscopy(analysis):
     # Differential
     a = pathway_space[pathway_space.columns[pathway_space.columns.str.contains("after")]].mean(axis=1)
     b = pathway_space[pathway_space.columns[pathway_space.columns.str.contains("before")]].mean(axis=1)
+    a.name = "after_Ibrutinib"
+    b.name = "before_Ibrutinib"
+    abs_diff = (a - b).sort_values()
+    abs_diff.name = 'fold_change'
+
+    # add mean
+    changes = pd.DataFrame([a, b, abs_diff]).T
+    changes["mean"] = changes[[a.name, b.name]].mean(axis=1)
+
+    # add number of drugs per pathway
+    n = analysis.drug_annotation.groupby("kegg_pathway_name")["drug"].nunique()
+    n.name = "n_drugs"
+    changes = changes.join(n)
+    changes.to_csv(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.differential.changes.csv"))
+    changes = pd.read_csv(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.differential.changes.csv"))
 
     # scatter
-    from statsmodels.nonparametric.smoothers_lowess import lowess
     fit = lowess(b, a, return_sorted=False)
     dist = abs(b - fit)
-    norm = matplotlib.colors.Normalize(vmin=0, vmax=dist.max())
+    normalizer = matplotlib.colors.Normalize(vmin=0, vmax=dist.max())
 
     fig, axis = plt.subplots(1, figsize=(4, 4))
-    axis.scatter(a, b, color=plt.cm.inferno(norm(dist)), alpha=0.8)
-    for l in (fit - b).sort_values().tail(10).index:
+    axis.scatter(a, b, color=plt.cm.inferno(normalizer(dist)), alpha=0.8, s=4 + (3 ** z_score(changes["n_drugs"])))
+    for l in (fit - b).sort_values().tail(15).index:
         axis.text(a.ix[l], b.ix[l], l, fontsize=7.5, ha="left")
-    for l in (b - fit).sort_values().tail(10).index:
+    for l in (b - fit).sort_values().tail(15).index:
         axis.text(a.ix[l], b.ix[l], l, fontsize=7.5, ha="right")
+    lims = [
+        np.min([axis.get_xlim(), axis.get_ylim()]),  # min of both axes
+        np.max([axis.get_xlim(), axis.get_ylim()]),  # max of both axes
+    ]
+    # now plot both limits against eachother
+    axis.plot(lims, lims, '--', alpha=0.75, color="black", zorder=0)
+    axis.set_aspect('equal')
+    axis.set_xlim(lims)
+    axis.set_ylim(lims)
     axis.set_xlabel("After ibrutinib")
     axis.set_ylabel("Before ibrutinib")
     sns.despine(fig)
-    fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.differential.scatter.svg"), bbox_inches="tight")
+    fig.savefig(os.path.join(analysis.results_dir, "pharmacoscopy.sensitivity.pathway_space.differential.scatter.svg"), bbox_inches="tight")
 
-    # rank vs cross-patient sensitivity
-    abs_diff = (a - b).sort_values()
-    abs_diff.to_csv(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.differential.abs_diff.csv"))
-    norm = matplotlib.colors.Normalize(vmin=abs_diff.min(), vmax=abs_diff.max())
+    # maplot
+    normalizer = matplotlib.colors.Normalize(vmin=changes['fold_change'].min(), vmax=changes['fold_change'].max())
 
     fig, axis = plt.subplots(1, figsize=(4, 4))
-    axis.scatter(abs_diff.rank(), abs_diff, color=plt.cm.inferno(norm(abs_diff)), alpha=0.8)
-    axis.axhline(0, color="black", alpha=0.8, linestyle="--")
-    for l in abs_diff.head(15).index:
-        axis.text(abs_diff.rank().ix[l], abs_diff.ix[l], l, fontsize=5, ha="left")
-    for l in abs_diff.tail(15).index:
-        axis.text(abs_diff.rank().ix[l], abs_diff.ix[l], l, fontsize=5, ha="right")
-    axis.set_xlabel("Rank in change pathway accessibility")
-    axis.set_ylabel("Log2(fold change) in pathway accessibilty (after/before)")
+    axis.scatter(changes['mean'], changes['fold_change'], color=plt.cm.inferno(normalizer(changes['fold_change'])), alpha=0.5, s=4 + (3 ** z_score(changes["n_drugs"])))
+    for l in changes['fold_change'].sort_values().tail(15).index:
+        axis.text(changes['mean'].ix[l], changes['fold_change'].ix[l], l, fontsize=7.5, ha="right")
+    for l in changes['fold_change'].sort_values().head(15).index:
+        axis.text(changes['mean'].ix[l], changes['fold_change'].ix[l], l, fontsize=7.5, ha="right")
+    axis.axhline(0, linestyle="--", color="black", alpha=0.5)
+    axis.set_xlabel("Mean pathway accessibilty between timepoints")
+    axis.set_ylabel("Change in pathway sensitivity (after / before)")
     sns.despine(fig)
-    fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.differential.rank.svg"), bbox_inches="tight")
+    fig.savefig(os.path.join(analysis.results_dir, "pharmacoscopy.sensitivity.pathway_space.differential.maplot.svg"), bbox_inches="tight")
+
+    # rank vs cross-patient sensitivity
+    normalizer = matplotlib.colors.Normalize(vmin=changes['fold_change'].min(), vmax=changes['fold_change'].max())
+
+    fig, axis = plt.subplots(1, figsize=(4, 4))
+    axis.scatter(changes['fold_change'].rank(method="dense"), changes['fold_change'], color=plt.cm.inferno(normalizer(changes['fold_change'])), alpha=0.5, s=4 + (3 ** z_score(changes["n_drugs"])))
+    axis.axhline(0, color="black", alpha=0.8, linestyle="--")
+    for l in changes['fold_change'].sort_values().head(15).index:
+        axis.text(changes['fold_change'].rank(method="dense").ix[l], changes['fold_change'].ix[l], l, fontsize=5, ha="left")
+    for l in changes['fold_change'].sort_values().tail(15).index:
+        axis.text(changes['fold_change'].rank(method="dense").ix[l], changes['fold_change'].ix[l], l, fontsize=5, ha="right")
+    axis.set_xlabel("Rank in change pathway accessibility")
+    axis.set_ylabel("Change in pathway sensitivity (after / before)")
+    sns.despine(fig)
+    fig.savefig(os.path.join(analysis.results_dir, "pharmacoscopy.sensitivity.pathway_space.differential.rank.svg"), bbox_inches="tight")
+
+    # To confirm, plot a few specific examples
+    # Proteasome
+    of_interest = ["Bortezomib", "Carfilzomib"]
+
+    d = sensitivity[
+        (sensitivity["drug"].isin(of_interest)) &
+        (sensitivity["patient_id"] != "CLL2")
+    ]
+
+    # difference of conditions
+    f = d.groupby(['patient_id', 'drug']).apply(
+        lambda x:
+            x[x['timepoint_name'] == 'after_Ibrutinib']["score"].squeeze() -
+            x[x['timepoint_name'] == 'before_Ibrutinib']["score"].squeeze())
+    f.name = "diff"
+    f = f.reset_index()
+    d = pd.merge(d, f)
+
+    # mean of conditions
+    f = d.groupby(['patient_id', 'drug'])["score"].mean()
+    f.name = "mean"
+    f = f.reset_index()
+    d = pd.merge(d, f)
+
+    fig, axis = plt.subplots(len(of_interest), 2, figsize=(2 * 6, len(of_interest) * 4))
+    d1 = d[d['drug'] == of_interest[0]]
+    sns.stripplot(x="patient_id", y="score", data=d1, hue="timepoint_name", order=d1.sort_values("diff")['patient_id'].drop_duplicates(), ax=axis[0][0])
+    sns.stripplot(x="patient_id", y="score", data=d1, hue="timepoint_name", order=d1.sort_values("mean")['patient_id'].drop_duplicates(), ax=axis[1][0])
+    axis[0][0].set_title(of_interest[0])
+    axis[1][0].set_title(of_interest[0])
+    axis[0][0].axhline(0, color="black", linestyle="--", alpha=0.6)
+    axis[1][0].axhline(0, color="black", linestyle="--", alpha=0.6)
+    d2 = d[d['drug'] == of_interest[1]]
+    sns.stripplot(x="patient_id", y="score", data=d2, hue="timepoint_name", order=d2.sort_values("diff")['patient_id'].drop_duplicates(), ax=axis[0][1])
+    sns.stripplot(x="patient_id", y="score", data=d2, hue="timepoint_name", order=d2.sort_values("mean")['patient_id'].drop_duplicates(), ax=axis[1][1])
+    axis[0][1].set_title(of_interest[1])
+    axis[1][1].set_title(of_interest[1])
+    axis[0][1].axhline(0, color="black", linestyle="--", alpha=0.6)
+    axis[1][1].axhline(0, color="black", linestyle="--", alpha=0.6)
+    sns.despine(fig)
+    fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.proteasome_inhibitors.stripplot.svg"), bbox_inches='tight', dpi=300)
+
+    fig, axis = plt.subplots(1, figsize=(4, 4))
+    sns.stripplot(data=d[["patient_id", "diff", "drug"]].drop_duplicates(), x="drug", y="diff", ax=axis)
+    sns.violinplot(data=d[["patient_id", "diff", "drug"]].drop_duplicates(), x="drug", y="diff", ax=axis, alpha=0.6)
+    axis.axhline(0, color="black", linestyle="--", alpha=0.6)
+    sns.despine(fig)
+    fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.proteasome_inhibitors.diff_violin.svg"), bbox_inches='tight', dpi=300)
+
+    #
 
     # Differential, patient-specific
     pathway_space2 = pathway_space.T
@@ -3265,12 +3254,12 @@ def atac_to_pathway(analysis, samples=None):
     #
 
     # Differential
-    # fold_change
+    # change
     a = path_cov[path_cov.index.get_level_values("timepoint_name") == "after_Ibrutinib"].mean()
     a.name = "after_Ibrutinib"
     b = path_cov[path_cov.index.get_level_values("timepoint_name") == "before_Ibrutinib"].mean()
     b.name = "before_Ibrutinib"
-    fc = (a - b).sort_values()
+    fc = (a - b)
     fc.name = "fold_change"
 
     # p-values & q-values
@@ -3280,6 +3269,9 @@ def atac_to_pathway(analysis, samples=None):
     # add number of genes per pathway
     changes = pd.DataFrame([pathway_sizes, a, b, fc, p_values, q_values]).T
     changes.index.name = "pathway"
+    # mean of both timepoints
+    changes["mean"] = changes[["after_Ibrutinib", "before_Ibrutinib"]].mean(axis=1)
+
     # save
     changes.sort_values("p_value").to_csv(os.path.join(analysis.results_dir, "pathway.sample_accessibility.size-log2_fold_change-p_value.q_value.csv"))
 
@@ -3289,61 +3281,65 @@ def atac_to_pathway(analysis, samples=None):
     normalizer = matplotlib.colors.Normalize(vmin=0, vmax=dist.max())
 
     fig, axis = plt.subplots(1, figsize=(4, 4))
-    axis.scatter(a, b, color=plt.cm.inferno(normalizer(dist)), alpha=0.8)
-    for l in (fit - b).sort_values().tail(10).index:
+    axis.scatter(a, b, color=plt.cm.inferno(normalizer(dist)), alpha=0.8, s=4 + (5 ** z_score(changes["mean"])))
+    for l in (fit - b).sort_values().tail(15).index:
         axis.text(a.ix[l], b.ix[l], l, fontsize=7.5, ha="left")
-    for l in (b - fit).sort_values().tail(10).index:
+    for l in (b - fit).sort_values().tail(15).index:
         axis.text(a.ix[l], b.ix[l], l, fontsize=7.5, ha="right")
+    lims = [
+        np.min([axis.get_xlim(), axis.get_ylim()]),  # min of both axes
+        np.max([axis.get_xlim(), axis.get_ylim()]),  # max of both axes
+    ]
+    # now plot both limits against eachother
+    axis.plot(lims, lims, '--', alpha=0.75, color="black", zorder=0)
+    axis.set_aspect('equal')
+    axis.set_xlim(lims)
+    axis.set_ylim(lims)
     axis.set_xlabel("After ibrutinib")
     axis.set_ylabel("Before ibrutinib")
     sns.despine(fig)
     fig.savefig(os.path.join(analysis.results_dir, "pathway.mean_accessibility.scatter.svg"), bbox_inches="tight")
 
     # volcano
-    fit = lowess(-np.log10(changes['q_value']), changes['fold_change'], return_sorted=False)
-    dist = abs(-np.log10(changes['q_value']) - fit)
-    normalizer = matplotlib.colors.Normalize(vmin=0, vmax=dist.max())
-
+    normalizer = matplotlib.colors.Normalize(vmin=changes['fold_change'].min(), vmax=changes['fold_change'].max())
     fig, axis = plt.subplots(1, figsize=(4, 4))
-    axis.scatter(changes['fold_change'], -np.log10(changes['q_value']), color=plt.cm.inferno(normalizer(dist)), alpha=0.8)
-    for l in (fit - b).sort_values().tail(10).index:
-        axis.text(a.ix[l], b.ix[l], l, fontsize=7.5, ha="left")
-    for l in (b - fit).sort_values().tail(10).index:
-        axis.text(a.ix[l], b.ix[l], l, fontsize=7.5, ha="right")
-    axis.set_xlabel("After ibrutinib")
-    axis.set_ylabel("Before ibrutinib")
+    axis.scatter(changes['fold_change'], -np.log10(changes['q_value']), color=plt.cm.inferno(normalizer(changes['fold_change'])), alpha=0.5, s=4 + (5 ** z_score(changes["mean"])))
+    for l in changes['fold_change'].sort_values().tail(15).index:
+        axis.text(changes['fold_change'].ix[l], -np.log10(changes['q_value']).ix[l], l, fontsize=7.5, ha="left")
+    for l in changes['fold_change'].sort_values().head(15).index:
+        axis.text(changes['fold_change'].ix[l], -np.log10(changes['q_value']).ix[l], l, fontsize=7.5, ha="right")
+    axis.set_xlabel("Change in pathway accessibilty (after / before)")
+    axis.set_ylabel("-log10(p-value)")
     sns.despine(fig)
     fig.savefig(os.path.join(analysis.results_dir, "pathway.mean_accessibility.volcano.svg"), bbox_inches="tight")
 
     # maplot
-    fit = lowess(b, a, return_sorted=False)
-    dist = abs(b - fit)
-    normalizer = matplotlib.colors.Normalize(vmin=0, vmax=dist.max())
+    normalizer = matplotlib.colors.Normalize(vmin=changes['fold_change'].min(), vmax=changes['fold_change'].max())
 
     fig, axis = plt.subplots(1, figsize=(4, 4))
-    axis.scatter(a, b, color=plt.cm.inferno(normalizer(dist)), alpha=0.8)
-    for l in (fit - b).sort_values().tail(10).index:
-        axis.text(a.ix[l], b.ix[l], l, fontsize=7.5, ha="left")
-    for l in (b - fit).sort_values().tail(10).index:
-        axis.text(a.ix[l], b.ix[l], l, fontsize=7.5, ha="right")
-    axis.set_xlabel("After ibrutinib")
-    axis.set_ylabel("Before ibrutinib")
+    axis.scatter(changes['mean'], changes['fold_change'], color=plt.cm.inferno(normalizer(changes['fold_change'])), alpha=0.5, s=4 + (5 ** z_score(changes["mean"])))
+    for l in changes['fold_change'].sort_values().tail(15).index:
+        axis.text(changes['mean'].ix[l], changes['fold_change'].ix[l], l, fontsize=7.5, ha="left")
+    for l in changes['fold_change'].sort_values().head(15).index:
+        axis.text(changes['mean'].ix[l], changes['fold_change'].ix[l], l, fontsize=7.5, ha="right")
+    axis.axhline(0, linestyle="--", color="black", alpha=0.5)
+    axis.set_xlabel("Mean pathway accessibilty between timepoints")
+    axis.set_ylabel("Change in pathway accessibilty (after / before)")
     sns.despine(fig)
     fig.savefig(os.path.join(analysis.results_dir, "pathway.mean_accessibility.maplot.svg"), bbox_inches="tight")
 
     # rank vs cross-patient sensitivity
-    changes = pd.read_csv(os.path.join(analysis.results_dir, "pathway.sample_accessibility.size-log2_fold_change-p_value.q_value.csv"), index_col=0, header=None)
-    normalizer = matplotlib.colors.Normalize(vmin=fc.min(), vmax=fc.max())
+    normalizer = matplotlib.colors.Normalize(vmin=changes['fold_change'].min(), vmax=changes['fold_change'].max())
 
     fig, axis = plt.subplots(1, figsize=(4, 4))
-    axis.scatter(fc.rank(), fc, color=plt.cm.inferno(normalizer(fc)), alpha=0.8)
+    axis.scatter(changes['fold_change'].rank(method="dense"), changes['fold_change'], color=plt.cm.inferno(normalizer(changes['fold_change'])), alpha=0.5, s=4 + (5 ** z_score(changes["mean"])))
     axis.axhline(0, color="black", alpha=0.8, linestyle="--")
-    for l in fc.head(15).index:
-        axis.text(fc.rank().ix[l], fc.ix[l], l, fontsize=5, ha="left")
-    for l in fc.tail(15).index:
-        axis.text(fc.rank().ix[l], fc.ix[l], l, fontsize=5, ha="right")
+    for l in changes['fold_change'].sort_values().head(15).index:
+        axis.text(changes['fold_change'].rank(method="dense").ix[l], changes['fold_change'].ix[l], l, fontsize=5, ha="left")
+    for l in changes['fold_change'].sort_values().tail(15).index:
+        axis.text(changes['fold_change'].rank(method="dense").ix[l], changes['fold_change'].ix[l], l, fontsize=5, ha="right")
     axis.set_xlabel("Rank in change pathway accessibility")
-    axis.set_ylabel("Log2(fold change) in pathway accessibilty (after/before)")
+    axis.set_ylabel("Change in pathway accessibilty (after / before)")
     sns.despine(fig)
     fig.savefig(os.path.join(analysis.results_dir, "pathway.mean_accessibility.rank.svg"), bbox_inches="tight")
 
@@ -3366,7 +3362,7 @@ def atac_to_pathway(analysis, samples=None):
 
     ps = pharma.index.str.extract("(CLL\d+)-.*").drop_duplicates().sort_values().drop('CLL2').drop('CLL8')
     ts = pharma.index.str.extract(".*-(.*)").drop_duplicates().sort_values(ascending=False)
-    fig, axis = plt.subplots(len(ts), len(ps), figsize=(len(ps) * 4, len(ts) * 4), sharex=True, sharey=True)
+    fig, axis = plt.subplots(len(ts), len(ps), figsize=(len(ps) * 4, len(ts) * 4), sharex=False, sharey=False)
     for i, patient_id in enumerate(ps):
         for j, timepoint in enumerate(ts):
             print(patient_id, timepoint)
@@ -3384,99 +3380,123 @@ def atac_to_pathway(analysis, samples=None):
     sns.despine(fig)
     fig.savefig(os.path.join(analysis.results_dir, "pathway-pharmacoscopy.scatter.png"), bbox_inches='tight', dpi=300)
 
-
     # Patient-level
     # globally
     pharma_global = pd.read_csv(os.path.join("results", "pharmacoscopy", "pharmacoscopy.sensitivity.pathway_space.differential.abs_diff.csv"), index_col=0, header=None, squeeze=True)
-    atac_global = fc
+    pharma_global.name = "pharmacoscopy"
 
-    pharma_global = pharma_global.ix[atac_global.index]
-    atac_global = atac_global.ix[pharma_global.index]
+    p = changes.join(pharma_global)
 
-    plt.scatter(pharma_global, atac_global)
+    plt.scatter(z_score(p['fold_change']), z_score(p['pharma']))
 
     # individually
     pharma_patient = pd.read_csv(os.path.join("results", "pharmacoscopy", "pharmacoscopy.sensitivity.pathway_space.differential.patient_specific.abs_diff.csv"), index_col=0)
-    a = path_cov[path_cov.index.get_level_values("timepoint_name") == "after_Ibrutinib"].reset_index(drop=True)
-    b = path_cov[path_cov.index.get_level_values("timepoint_name") == "before_Ibrutinib"].reset_index(drop=True)
-    atac_patient = a - b
-    atac_patient.index = pd.Series(path_cov.index.get_level_values("patient_id").drop_duplicates())
+    a = path_cov[path_cov.index.get_level_values("timepoint_name") == "after_Ibrutinib"].reset_index(drop=True)  # .reset_index(level=range(1, len(path_cov.index.levels)))
+    b = path_cov[path_cov.index.get_level_values("timepoint_name") == "before_Ibrutinib"].reset_index(drop=True)  # .reset_index(level=range(1, len(path_cov.index.levels)))
+    atac_patient = (a - b).T
+    atac_patient.columns = pd.Series(path_cov.index.get_level_values("patient_id").drop_duplicates())
+
+    pharma_patient = pharma_patient.T.ix[atac_patient.columns].T
+    atac_patient = atac_patient[pharma_patient.columns]
+
+    fig, axis = plt.subplots(3, 4, figsize=(4 * 4, 3 * 4), sharex=True, sharey=True)
+    axis = axis.flatten()
+    for i, patient_id in enumerate(atac_patient.columns):
+        print(patient_id)
+
+        p = pharma_patient[[patient_id]]
+        p.columns = ["Pharmacoscopy"]
+        a = atac_patient[patient_id]
+        a.name = "ATAC-seq"
+
+        o = p.join(a).dropna().apply(z_score, axis=0)
+
+        # stat, p_value = scipy.stats.pearsonr(p, a)
+        axis[i].scatter(o["Pharmacoscopy"], o["ATAC-seq"], alpha=0.5)  # , color=color.next())
+        axis[i].set_title(" ".join([patient_id]))
+        axis[i].axhline(0, linestyle="--", color="black", linewidth=1)
+        axis[i].axvline(0, linestyle="--", color="black", linewidth=1)
+    sns.despine(fig)
+    fig.savefig(os.path.join(analysis.results_dir, "pathway-pharmacoscopy.patient_specific.scatter.png"), bbox_inches='tight', dpi=300)
 
 
-    pharma_patient = pharma_patient.T.ix[atac_patient.columns]
-    atac_patient = atac_patient.ix[pharma_patient.index]
+def make_network(analysis):
+    """
+    Make a network with various types of interactions:
+    DRUG -> GENE
+    GENE -> PATHWAY
+    DRUG -> PATHWAY
 
+    the scores reflect the number and direction of interactions
+    """
+    import networkx as nx
 
-def state_enrichment_overlap(n=100):
-    all_states = "all_states_all_lines.bed"
+    # Individual accessibility/sensitivity levels per patient
+    # atac
+    path_atac = pd.read_csv(os.path.join(analysis.results_dir, "pathway.sample_accessibility.csv"), index_col=0, header=range(24))
+    a = path_atac[path_atac.columns[path_atac.columns.get_level_values("timepoint_name") == "after_Ibrutinib"]]
+    b = path_atac[path_atac.columns[path_atac.columns.get_level_values("timepoint_name") == "before_Ibrutinib"]]
+    a.columns = a.columns.get_level_values("patient_id")
+    b.columns = b.columns.get_level_values("patient_id")
+    path_atac = (a - b)
 
-    # states of interest:
-    # get names of all states
-    states = pd.read_csv(all_states, sep="\t", header=None)[3].unique().tolist()
+    # pharmacoscopy (pathway-level)
+    # path_pharma = pd.read_csv(os.path.join(analysis.results_dir, "pharmacoscopy", "pharmacoscopy.score.pathway_space.csv"), index_col=0)
+    path_pharma = pd.read_csv(os.path.join(analysis.results_dir, "pharmacoscopy", "pharmacoscopy.sensitivity.pathway_space.differential.patient_specific.abs_diff.csv"), index_col=0).drop("CLL2", axis=1)
+    # match patients
+    path_atac = path_atac[path_atac.columns[path_atac.columns.isin(path_pharma.columns)]]
+    path_pharma = path_pharma.ix[path_atac.index].dropna()
+    path_atac = path_atac.ix[path_pharma.index].dropna()
 
-    # loop through states, merge intervals, count number intersepting CLL peaks, and not intersepting
-    cll_ints = pybedtools.BedTool(os.path.join("data", analysis.name + "_peak_set.bed"))
+    # Change values across patients
+    # atac
+    changes_atac = pd.read_csv(os.path.join(analysis.results_dir, "pathway.sample_accessibility.size-log2_fold_change-p_value.q_value.csv"), index_col=0)
+    # pharmacoscopy
+    changes_parma = path_pharma.mean(1)
 
-    df = pd.DataFrame()
-    for state in states[-3:]:
-        state_bed = "{0}.bed".format(state)
-        os.system("grep {0} {1} > {2}".format(state, all_states, state_bed))
+    # DRUG -> GENE
+    csv = pd.read_csv(os.path.join("data", "pharmacoscopy.drug-gene_interactions.tsv"), sep='\t')
+    d = csv['drug'].unique()
+    G1 = nx.from_pandas_dataframe(csv, source='drug', target='entrez_gene_symbol', edge_attr=['interaction_types', "interaction_score"])
+    nx.set_node_attributes(G1, "entity_type", {x: "drug" if x in d else "gene" for x in G1.nodes()})
+    G1 = G1.to_directed()
+    nx.write_gexf(G1, os.path.join("data", "pharmacoscopy.drug-gene_interactions.gexf"))
 
-        # merge all intervals (of the same type across cell types)
-        state_ints = pybedtools.BedTool(state_bed).sort().merge()
+    # DRUG -> PATHWAY
+    csv = pd.read_csv(os.path.join("data", "pharmacoscopy.drug-pathway_interactions.tsv"), sep='\t')
+    csv = csv[csv["kegg_pathway_name"].isin(path_atac.index.tolist())]
+    d = csv['drug'].unique()
+    p = csv['kegg_pathway_name'].unique()
+    G2 = nx.from_pandas_dataframe(csv, source='drug', target='kegg_pathway_name', edge_attr=['interaction_types', "interaction_score"])
+    G2 = G2.to_directed()
+    nx.set_node_attributes(G2, "entity_type", {x: "drug" if x in d else "pathway" for x in G2.nodes()})
+    nx.write_gexf(G2, os.path.join("data", "pharmacoscopy.drug-pathway_interactions.gexf"))
+    nx.write_graphml(G2, os.path.join("data", "pharmacoscopy.drug-pathway_interactions.graphml"))
 
-        total = len(state_ints)
-        pos = len(state_ints.intersect(cll_ints))
+    # GENE -> PATHWAY
+    # (pharmacoscopy based)
+    gene_net = analysis.drug_annotation[['entrez_gene_symbol', 'kegg_pathway_name']].drop_duplicates().dropna()
+    gene_net["interaction_score"] = 1
+    gene_net["interaction_types"] = "gene-pathway"
+    g = gene_net['entrez_gene_symbol'].unique()
+    G3 = nx.from_pandas_dataframe(gene_net, source='entrez_gene_symbol', target='kegg_pathway_name', edge_attr=['interaction_types', 'interaction_score'])
+    nx.set_node_attributes(G3, "entity_type", {x: "gene" if x in g else "pathway" for x in G3.nodes()})
+    G3 = G3.to_directed()
+    nx.write_gexf(G3, os.path.join("data", "pharmacoscopy.gene-pathway_interactions.gexf"))
 
-        # get mean of `n` shuffled cll sites
-        background = list()
-        for i in range(n):
-            background.append(len(state_ints.intersect(cll_ints.shuffle(genome='hg19', chrom=True))))
+    F = nx.compose(G1, G2)
+    F = nx.compose(F, G3)
 
-        # append to df
-        df = df.append(pd.Series([total, pos, np.round(np.mean(background))]), ignore_index=True)
-    df.index = states
-    df.columns = ['total', 'pos', 'background']
-
-    df['state'] = df.index
-
-    df.to_csv("chrom_state_overlap_all.csv", index=False)
-
-    df2 = pd.melt(df, id_vars='state')
-
-    df2.sort(['variable', 'value'], inplace=True)
-
-    fig, axis = plt.subplots(1)
-    sns.barplot(data=df2, x='state', y='value', hue='variable', ax=axis)
-    fig.savefig("chrom_state_overlap_all.svg", bbox_inches='tight')
-
-    # fraction of total
-    df['posF'] = df['pos'] / df['total']
-    df['backgroundF'] = df['background'] / df['total']
-    df3 = pd.melt(df[["state", "posF", "backgroundF"]], id_vars='state')
-    df3.sort(['variable', 'value'], inplace=True)
-
-    fig, axis = plt.subplots(1)
-    sns.barplot(data=df3, x='state', y='value', hue='variable', ax=axis)
-    fig.savefig("chrom_state_overlap_all.fraction_total.svg", bbox_inches='tight')
-
-    # fraction of total enriched over background
-    df['foldF'] = df['posF'] / df['backgroundF']
-    df4 = pd.melt(df[["state", "foldF"]], id_vars='state')
-    df4.sort(['variable', 'value'], inplace=True)
-
-    fig, axis = plt.subplots(1)
-    sns.barplot(data=df4, x='state', y='value', hue='variable', ax=axis)
-    fig.savefig("chrom_state_overlap_all.fraction_total.enriched.svg", bbox_inches='tight')
-
-    # same with log2
-    df['foldFlog'] = np.log2(df['foldF'])
-    df5 = pd.melt(df[["state", "foldFlog"]], id_vars='state')
-    df5.sort(['variable', 'value'], inplace=True)
-
-    fig, axis = plt.subplots(1)
-    sns.barplot(data=df5, x='state', y='value', hue='variable', ax=axis)
-    fig.savefig("chrom_state_overlap_all.fraction_total.enriched.log.svg", bbox_inches='tight')
+    # add patient-specific
+    for patient_id in path_pharma.columns:
+        nx.set_node_attributes(F, "pharma {}".format(patient_id), {str(y): float(path_pharma[patient_id].ix[y]) if y in p else 0.0 for y in F.nodes()})
+    for patient_id in path_atac.columns:
+        nx.set_node_attributes(F, "atac {}".format(patient_id), {str(y): float(path_atac[patient_id].ix[y]) if y in p else 0.0 for y in F.nodes()})
+    # add global
+    nx.set_node_attributes(F, "pharma change", {str(y): float(changes_parma.ix[y]) if y in p else 0.0 for y in F.nodes()})
+    for attribute in changes_atac.columns:
+        nx.set_node_attributes(F, "atac {}".format(attribute), {str(y): float(changes_atac[attribute].ix[y]) if y in p else 0.0 for y in F.nodes()})
+    nx.write_gexf(F, os.path.join("data", "pharmacoscopy.all_interactions.gexf"))
 
 
 def DESeq_analysis(counts_matrix, experiment_matrix, variable, covariates, output_prefix, alpha=0.05):
