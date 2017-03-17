@@ -2880,6 +2880,112 @@ def pharmacoscopy(analysis):
             tick.set_rotation(0)
         fig.savefig(os.path.join(output_dir, "{}.timepoint_change.abs_diff.both_axis_sorted.svg".format(name)), bbox_inches="tight")
 
+    # Unsupervised analysis on pharmacoscopy data
+    from sklearn.decomposition import PCA
+    from sklearn.manifold import MDS
+    from collections import OrderedDict
+    import re
+    import itertools
+    from scipy.stats import kruskal
+    from scipy.stats import pearsonr
+
+    for name, score, matrix in [("sensitivity", "score", sensitivity), ("auc", "AUC", auc)]:
+
+        # Make drug - sample pivot table
+        matrix['id'] = matrix['patient_id'] + " - " + matrix['timepoint_name']
+        matrix = pd.pivot_table(data=matrix, index="drug", columns=['id', 'patient_id', 'sample_id', 'pharmacoscopy_id', 'timepoint_name'], values=score)
+
+        color_dataframe = pd.DataFrame(
+            analysis.get_level_colors(index=matrix.columns, levels=matrix.columns.names),
+            index=matrix.columns.names,
+            columns=matrix.columns.get_level_values("id"))
+
+        # Pairwise correlations
+        g = sns.clustermap(
+            matrix.corr(), xticklabels=False, yticklabels=matrix.columns.get_level_values("id"), annot=True,
+            cmap="Spectral_r", figsize=(15, 15), cbar_kws={"label": "Pearson correlation"}, row_colors=color_dataframe.values.tolist())
+        for item in g.ax_heatmap.get_yticklabels():
+            item.set_rotation(0)
+        g.ax_heatmap.set_xlabel(None)
+        g.ax_heatmap.set_ylabel(None)
+        g.fig.savefig(os.path.join(output_dir, "{}.corr.clustermap.svg".format(name)), bbox_inches='tight')
+
+        # MDS
+        to_plot = ["patient_id", "timepoint_name"]
+        mds = MDS(n_jobs=-1)
+        x_new = mds.fit_transform(matrix.T)
+        # transform again
+        x = pd.DataFrame(x_new)
+        xx = x.apply(lambda j: (j - j.mean()) / j.std(), axis=0)
+
+        fig, axis = plt.subplots(1, len(to_plot), figsize=(4 * len(to_plot), 4 * 1))
+        axis = axis.flatten()
+        for i, attr in enumerate(to_plot):
+            for j in range(len(xx)):
+                try:
+                    label = matrix.columns.get_level_values(attr)[j]
+                except AttributeError:
+                    label = np.nan
+                axis[i].scatter(xx.ix[j][0], xx.ix[j][1], s=50, color=color_dataframe.ix[attr][j], label=label)
+            axis[i].set_title(to_plot[i])
+            axis[i].set_xlabel("MDS 1")
+            axis[i].set_ylabel("MDS 2")
+            axis[i].set_xticklabels(axis[i].get_xticklabels(), visible=False)
+            axis[i].set_yticklabels(axis[i].get_yticklabels(), visible=False)
+
+            # Unique legend labels
+            handles, labels = axis[i].get_legend_handles_labels()
+            by_label = OrderedDict(zip(labels, handles))
+            if any([type(c) in [str, unicode] for c in by_label.keys()]) and len(by_label) <= 20:
+                if not any([re.match("^\d", c) for c in by_label.keys()]):
+                    axis[i].legend(by_label.values(), by_label.keys())
+        fig.savefig(os.path.join(output_dir, "{}.mds.svg".format(name)), bbox_inches="tight")
+
+        # PCA
+        pca = PCA()
+        x_new = pca.fit_transform(matrix.T)
+        # transform again
+        x = pd.DataFrame(x_new)
+        xx = x.apply(lambda j: (j - j.mean()) / j.std(), axis=0)
+
+        # plot % explained variance per PC
+        fig, axis = plt.subplots(1)
+        axis.plot(
+            range(1, len(pca.explained_variance_) + 1),  # all PCs
+            (pca.explained_variance_ / pca.explained_variance_.sum()) * 100, 'o-')  # % of total variance
+        axis.axvline(len(to_plot), linestyle='--')
+        axis.set_xlabel("PC")
+        axis.set_ylabel("% variance")
+        sns.despine(fig)
+        fig.savefig(os.path.join(output_dir, "{}.pca.explained_variance.svg".format(name)), bbox_inches='tight')
+
+        # plot
+        pcs = min(xx.shape[0] - 1, 10)
+        fig, axis = plt.subplots(pcs, len(to_plot), figsize=(4 * len(to_plot), 4 * pcs))
+        for pc in range(pcs):
+            for i, attr in enumerate(to_plot):
+                for j in range(len(xx)):
+                    try:
+                        label = matrix.columns.get_level_values(attr)[j]
+                    except AttributeError:
+                        label = np.nan
+                    axis[pc, i].scatter(xx.ix[j][pc], xx.ix[j][pc + 1], s=50, color=color_dataframe.ix[attr][j], label=label)
+                axis[pc, i].set_title(to_plot[i])
+                axis[pc, i].set_xlabel("PC {}".format(pc + 1))
+                axis[pc, i].set_ylabel("PC {}".format(pc + 2))
+                axis[pc, i].set_xticklabels(axis[pc, i].get_xticklabels(), visible=False)
+                axis[pc, i].set_yticklabels(axis[pc, i].get_yticklabels(), visible=False)
+
+                # Unique legend labels
+                handles, labels = axis[pc, i].get_legend_handles_labels()
+                by_label = OrderedDict(zip(labels, handles))
+                if any([type(c) in [str, unicode] for c in by_label.keys()]) and len(by_label) <= 20:
+                    if not any([re.match("^\d", c) for c in by_label.keys()]):
+                        axis[pc, i].legend(by_label.values(), by_label.keys())
+        fig.savefig(os.path.join(output_dir, "{}.pca.svg".format(name)), bbox_inches="tight")
+
+    #
+
     # Convert each sample to pathway-space
     pathway_space = pd.DataFrame()
     new_drugs = pd.DataFrame()
