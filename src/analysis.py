@@ -813,7 +813,7 @@ class Analysis(object):
 
         # Pairwise correlations
         g = sns.clustermap(
-            X.corr(), xticklabels=False, yticklabels=sample_display_names, annot=True, aspect=2,
+            X.corr(), xticklabels=False, yticklabels=sample_display_names, annot=True,
             cmap="Spectral_r", figsize=(15, 15), cbar_kws={"label": "Pearson correlation"}, row_colors=color_dataframe.values.tolist())
         for item in g.ax_heatmap.get_yticklabels():
             item.set_rotation(0)
@@ -1209,6 +1209,7 @@ class Analysis(object):
 
         # Extract significant based on p-value and fold-change
         diff = df[(df["padj"] < 0.01) & (abs(df["log2FoldChange"]) > 0.5)]
+        # diff = df[(df["padj"] < 0.05) & (abs(df["log2FoldChange"]) > 1)]
 
         if diff.shape[0] < 1:
             print("No significantly different regions found.")
@@ -1369,23 +1370,23 @@ class Analysis(object):
         # Characterize regions
         prefix = "%s.%s.diff_regions" % (output_suffix, trait)
         # region's structure
-        # characterize_regions_structure(df=df2, prefix=prefix, output_dir=output_dir)
+        # characterize_regions_structure(df=diff2, prefix=prefix, output_dir=output_dir)
         # region's function
-        # characterize_regions_function(df=df2, prefix=prefix, output_dir=output_dir)
+        # characterize_regions_function(df=diff2, prefix=prefix, output_dir=output_dir)
 
         # Heatmaps
         # Comparison level
-        g = sns.clustermap(np.log2(1 + df2[groups]).corr(), xticklabels=False)
+        g = sns.clustermap(np.log2(1 + diff2[groups]).corr(), xticklabels=False)
         for item in g.ax_heatmap.get_yticklabels():
             item.set_rotation(0)
         g.fig.savefig(os.path.join(output_dir, "%s.%s.diff_regions.groups.clustermap.corr.svg" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
 
-        g = sns.clustermap(np.log2(1 + df2[groups]).T, xticklabels=False)
+        g = sns.clustermap(np.log2(1 + diff2[groups]).T, xticklabels=False)
         for item in g.ax_heatmap.get_xticklabels():
             item.set_rotation(90)
         g.fig.savefig(os.path.join(output_dir, "%s.%s.diff_regions.groups.clustermap.svg" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
 
-        g = sns.clustermap(np.log2(1 + df2[groups]).T, xticklabels=False, z_score=1)
+        g = sns.clustermap(np.log2(1 + diff2[groups]).T, xticklabels=False, z_score=1)
         for item in g.ax_heatmap.get_xticklabels():
             item.set_rotation(90)
         g.fig.savefig(os.path.join(output_dir, "%s.%s.diff_regions.groups.clustermap.z0.svg" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
@@ -1403,7 +1404,7 @@ class Analysis(object):
         sample_display_names = color_dataframe.columns.str.replace("_ATAC-seq", "").str.replace("_hg19", "")
 
         g = sns.clustermap(
-            self.accessibility.ix[df2.index][[s.name for s in sel_samples]].corr(),
+            self.accessibility.ix[diff2.index][[s.name for s in sel_samples]].corr(),
             xticklabels=False, yticklabels=sample_display_names, annot=True, vmin=0, vmax=1,
             cmap="Spectral_r", figsize=(15, 15), cbar_kws={"label": "Pearson correlation"}, row_colors=color_dataframe.values.tolist())
         g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
@@ -1412,7 +1413,7 @@ class Analysis(object):
         g.fig.savefig(os.path.join(output_dir, "%s.%s.diff_regions.samples.clustermap.corr.svg" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
 
         g = sns.clustermap(
-            self.accessibility.ix[df2.index][[s.name for s in sel_samples]].T,
+            self.accessibility.ix[diff2.index][[s.name for s in sel_samples]].T,
             xticklabels=False, yticklabels=sample_display_names, annot=True,
             figsize=(15, 15), cbar_kws={"label": "Pearson correlation"}, row_colors=color_dataframe.values.tolist())
         g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
@@ -1421,7 +1422,7 @@ class Analysis(object):
         g.fig.savefig(os.path.join(output_dir, "%s.%s.diff_regions.samples.clustermap.svg" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
 
         g = sns.clustermap(
-            self.accessibility.ix[df2.index][[s.name for s in sel_samples]].T, z_score=1,
+            self.accessibility.ix[diff2.index][[s.name for s in sel_samples]].T, z_score=1,
             xticklabels=False, yticklabels=sample_display_names, annot=True,
             figsize=(15, 15), cbar_kws={"label": "Z-score of Pearson correlation"}, row_colors=color_dataframe.values.tolist())
         g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
@@ -1447,7 +1448,7 @@ class Analysis(object):
                 comparison_df = self.coverage_annotated.ix[diff[
                     (diff["comparison"] == comparison) &
                     (f(diff["log2FoldChange"], 0))
-                ].index]
+                ].index].join(diff[['log2FoldChange', 'padj']])
                 if comparison_df.shape[0] < 1:
                     continue
                 # Characterize regions
@@ -1456,6 +1457,7 @@ class Analysis(object):
                 comparison_dir = os.path.join(output_dir, prefix)
 
                 print("Doing regions of comparison %s, with prefix %s" % (comparison, prefix))
+                characterize_regions_function(df=comparison_df, prefix=prefix, output_dir=comparison_dir)
 
                 # region's structure
                 if not os.path.exists(os.path.join(comparison_dir, prefix + "_regions.region_enrichment.csv")):
@@ -1681,6 +1683,8 @@ class Analysis(object):
                 tick.set_rotation(0)
             fig.savefig(os.path.join(output_dir, "enrichr.%s.cluster_specific.svg" % gene_set_library), bbox_inches="tight")
             fig.savefig(os.path.join(output_dir, "enrichr.%s.cluster_specific.png" % gene_set_library), bbox_inches="tight", dpi=300)
+
+    # using genes weighted by score
 
     def treatment_response_score(
             self, samples=None, trait="timepoint_name",
@@ -2670,6 +2674,7 @@ def pharmacoscopy(analysis):
     from scipy.stats import mannwhitneyu, ks_2samp, ttest_ind
     from statsmodels.sandbox.stats.multicomp import multipletests
     import scipy
+    from statsmodels.nonparametric.smoothers_lowess import lowess
 
     def z_score(x):
         return (x - x.mean()) / x.std()
@@ -3274,6 +3279,7 @@ def atac_to_pathway(analysis, samples=None):
 
     # save
     changes.sort_values("p_value").to_csv(os.path.join(analysis.results_dir, "pathway.sample_accessibility.size-log2_fold_change-p_value.q_value.csv"))
+    changes = pd.read_csv(os.path.join(analysis.results_dir, "pathway.sample_accessibility.size-log2_fold_change-p_value.q_value.csv"), index_col=0)
 
     # scatter
     fit = lowess(b, a, return_sorted=False)
@@ -3350,7 +3356,6 @@ def atac_to_pathway(analysis, samples=None):
     # Connect pharmacoscopy pathway-level sensitivities with ATAC-seq
 
     # Sample-level
-    # globally
     atac = path_cov
     pharma = pd.read_csv(os.path.join("results", "pharmacoscopy", "pharmacoscopy.score.pathway_space.csv"), index_col=0)
     pharma.loc["patient_id", :] = pd.Series(pharma.columns.str.split("-"), index=pharma.columns).apply(lambda x: x[0]).astype("category")
@@ -3380,14 +3385,28 @@ def atac_to_pathway(analysis, samples=None):
     sns.despine(fig)
     fig.savefig(os.path.join(analysis.results_dir, "pathway-pharmacoscopy.scatter.png"), bbox_inches='tight', dpi=300)
 
-    # Patient-level
     # globally
     pharma_global = pd.read_csv(os.path.join("results", "pharmacoscopy", "pharmacoscopy.sensitivity.pathway_space.differential.abs_diff.csv"), index_col=0, header=None, squeeze=True)
     pharma_global.name = "pharmacoscopy"
 
     p = changes.join(pharma_global)
 
-    plt.scatter(z_score(p['fold_change']), z_score(p['pharma']))
+    # scatter
+    n_to_label = 15
+    combined_diff = (p['fold_change'] + p['pharmacoscopy']).dropna()
+    normalizer = matplotlib.colors.Normalize(vmin=0, vmax=combined_diff.max())
+
+    fig, axis = plt.subplots(1, 1, figsize=(4 * 1, 4 * 1))
+    axis.scatter(p['fold_change'], p['pharmacoscopy'], alpha=0.8, color=plt.get_cmap("Blues")(normalizer(abs(combined_diff))))
+    axis.axhline(0, color="black", linestyle="--", alpha=0.5)
+    axis.axvline(0, color="black", linestyle="--", alpha=0.5)
+    # annotate top pathways
+    for path in combined_diff.sort_values().head(n_to_label).index:
+        axis.text(p['fold_change'].ix[path], p['pharmacoscopy'].ix[path], path, ha="right")
+    for path in combined_diff.sort_values().tail(n_to_label).index:
+        axis.text(p['fold_change'].ix[path], p['pharmacoscopy'].ix[path], path, ha="left")
+    sns.despine(fig)
+    fig.savefig(os.path.join(analysis.results_dir, "atac-pharmacoscopy.across_patients.scatter.svg"), bbox_inches='tight', dpi=300)
 
     # individually
     pharma_patient = pd.read_csv(os.path.join("results", "pharmacoscopy", "pharmacoscopy.sensitivity.pathway_space.differential.patient_specific.abs_diff.csv"), index_col=0)
@@ -3831,6 +3850,9 @@ def enrichr(dataframe, gene_set_libraries=None, kind="genes"):
         if kind == "genes":
             # Build payload with bed file
             attr = "\n".join(list(set(dataframe["gene_name"].dropna().tolist())))
+        elif kind == "genes+score":
+            d = dataframe[['gene_name', 'score']].astype(str)
+            attr = "\n".join((d["gene_name"] + "," + d["score"]).tolist())
         elif kind == "regions":
             # Build payload with bed file
             attr = "\n".join(list(set(dataframe[['chrom', 'start', 'end']].apply(lambda x: "\t".join([str(i) for i in x]), axis=1).tolist())))
@@ -3930,6 +3952,9 @@ def characterize_regions_structure(df, prefix, output_dir, universe_df=None):
 
 
 def characterize_regions_function(df, output_dir, prefix, results_dir="results", universe_file=None):
+    def scale_score(x):
+        return (x - x.min()) / (x.max() - x.min())
+
     # use all sites as universe
     if universe_file is None:
         universe_file = os.path.join(analysis.results_dir, analysis.name + "_peak_set.bed")
@@ -3945,8 +3970,29 @@ def characterize_regions_function(df, output_dir, prefix, results_dir="results",
     tsv_file = os.path.join(output_dir, "%s_regions.tsv" % prefix)
     df[['chrom', 'start', 'end']].reset_index().to_csv(tsv_file, sep="\t", header=False, index=False)
 
-    # export ensembl gene names
+    # export gene symbols
     df['gene_name'].str.split(",").apply(pd.Series, 1).stack().drop_duplicates().to_csv(os.path.join(output_dir, "%s_genes.symbols.txt" % prefix), index=False)
+
+    # export gene symbols with scaled absolute fold change
+    if "log2FoldChange" in df.columns:
+        df["score"] = scale_score(abs(df["log2FoldChange"]))
+        df["abs_fc"] = abs(df["log2FoldChange"])
+
+        d = df[['gene_name', 'score']].sort_values('score', ascending=False)
+
+        # split gene names from score if a reg.element was assigned to more than one gene
+        a = (
+            d['gene_name']
+            .str.split(",")
+            .apply(pd.Series, 1)
+            .stack()
+        )
+        a.index = a.index.droplevel(1)
+        a.name = 'gene_name'
+        d = d[['score']].join(a)
+        # reduce various ranks to mean per gene
+        d = d.groupby('gene_name').mean().reset_index()
+        d.to_csv(os.path.join(output_dir, "%s_genes.symbols.score.csv" % prefix), index=False)
 
     # Motifs
     # de novo motif finding - enrichment
@@ -3966,125 +4012,6 @@ def characterize_regions_function(df, output_dir, prefix, results_dir="results",
 
     # Save
     results.to_csv(os.path.join(output_dir, "%s_regions.enrichr.csv" % prefix), index=False, encoding='utf-8')
-
-
-def loci_plots(self, samples):
-
-    #
-    bed = os.path.join(self.data_dir, "deseq", "deseq.ibrutinib_treatment.diff_regions", "deseq.ibrutinib_treatment.diff_regions_regions.bed")
-    cmd = """fluff bandplot -S -f {bed} -d {bams} -o {output}""".format(
-        bed=bed,
-        bams=" ".join([s.filtered for s in samples]),
-        output="differential_regions.fluff_bandplot.png")
-    os.system(cmd)
-
-    #
-    bed = os.path.join(self.data_dir, "deseq", "deseq.ibrutinib_treatment.diff_regions", "deseq.ibrutinib_treatment.diff_regions_regions.bed")
-    cmd = """fluff bandplot -f {bed} -d {bams} -o {output}""".format(
-        bed=bed,
-        bams=" ".join([s.filtered for s in samples]),
-        output="differential_regions.fluff_bandplot.png")
-    os.system(cmd)
-
-    #
-    cmd = """
-    fluff heatmap -f {bed} -d {bams} -C k -k 5 -g -M Pearson -o {output}
-    """.format(
-        bed=bed,
-        bams=" ".join([s.filtered for s in samples]),
-        output="differential_regions.fluff_heatmap.png")
-    os.system(cmd)
-
-    # A few loci
-    cmd = """fluff profile -i chr1:23876028-23894677 -d {bams} -o profile_chr1_23876028_23894677
-    """.format(bams=" ".join([s.filtered for s in samples]))
-    os.system(cmd)
-
-    cmd = """fluff profile -S {scale} -i chr1:23857378-23913327 -d {bams} -o profile_chr1_23857378_23913327-S
-    """.format(bams=" ".join([s.filtered for s in samples]), scale=",".join(["200"] * len(samples)))
-    os.system(cmd)
-
-    cmd = """fluff profile -s -i chr1:23857378-23913327 -d {bams} -o profile_chr1_23857378_23913327-s
-    """.format(bams=" ".join([s.filtered for s in samples]))
-    os.system(cmd)
-
-
-def gene_level_oppeness(self, samples):
-    """
-    Plot openness of regulatory elements of relevant genes.
-    """
-    sns.set(style="white", palette="pastel", color_codes=True)
-
-    # Read in genes from supplementary table
-    genes = pd.read_csv(os.path.join("metadata", "Han_et_al_supplement.csv"))
-    genes["log2_fold_change"] = np.log2(genes["fold_change"])
-    # map to ensembl ids
-    # add gene name and ensemble_gene_id
-    ensembl_gtn = pd.read_table(os.path.join(self.data_dir, "external", "ensemblToGeneName.txt"), header=None)
-    ensembl_gtn.columns = ['ensembl_transcript_id', 'gene_symbol']
-    ensembl_gtp = pd.read_table(os.path.join(self.data_dir, "external", "ensGtp.txt"), header=None)[[0, 1]]
-    ensembl_gtp.columns = ['ensembl_gene_id', 'ensembl_transcript_id']
-    ensembl = pd.merge(ensembl_gtn, ensembl_gtp)
-
-    genes = pd.merge(genes, ensembl[['gene_symbol', 'ensembl_gene_id']].drop_duplicates(), how="left")
-
-    # Get gene-level measurements of accessibility (simply the mean of all regulatory elements across all samples)
-    a = self.coverage_annotated.groupby("ensembl_gene_id").mean()[[s.name for s in samples]].mean(axis=1)
-
-    # Get gene-level measurements of accessibility dependent on treatment
-    u = self.coverage_annotated.groupby("ensembl_gene_id").mean()[[s.name for s in samples if not s.under_treatment]].mean(axis=1)
-    t = self.coverage_annotated.groupby("ensembl_gene_id").mean()[[s.name for s in samples if s.under_treatment]].mean(axis=1)
-
-    # get indices of genes with fold > 1
-    i = a[(abs(u - t) > 1)].index
-    g = genes["ensembl_gene_id"]
-    gu = genes[genes["log2_fold_change"] > 0]["ensembl_gene_id"]
-    gd = genes[genes["log2_fold_change"] < 0]["ensembl_gene_id"]
-
-    # Plot
-    fig, axis = plt.subplots(2)
-    # MA plot
-    axis[0].scatter(a, (u - t))
-    axis[0].scatter(a.ix[gu], (u.ix[gu] - t.ix[gu]), color="red")
-    axis[0].scatter(a.ix[gd], (u.ix[gd] - t.ix[gd]), color="blue")
-    axis[0].scatter(a.ix[i], (u.ix[i] - t.ix[i]), color="green")
-
-    # Scatter
-    axis[1].scatter(u, t)
-    axis[1].scatter(u.ix[gu], t.ix[gu], color="red")
-    axis[1].scatter(u.ix[gd], t.ix[gd], color="blue")
-    axis[1].scatter(u.ix[i], t.ix[i], color="green")
-    fig.savefig(os.path.join(self.results_dir, "gene_level.accessibility.svg"), bbox_inches="tight")
-
-    # plot expression vs accessibility
-    fig, axis = plt.subplots(1)
-    axis.scatter(genes["log2_fold_change"], (u.ix[g] - t.ix[g]))
-    axis.set_xlabel("Fold change gene expression (log2)")
-    axis.set_ylabel("Difference in mean accessibility")
-    fig.savefig(os.path.join(self.results_dir, "EGCG_targets.expression_vs_accessibility.svg"), bbox_inches="tight")
-
-    # plot expression vs accessibility
-    t2 = self.coverage_annotated.groupby("ensembl_gene_id").mean()[[s.name for s in samples if s.timepoint_name == 'EGCG_100uM']].mean(axis=1)
-
-    fig, axis = plt.subplots(1)
-    axis.scatter(genes["log2_fold_change"], (u.ix[g] - t2.ix[g]))
-    axis.set_xlabel("Fold change gene expression (log2)")
-    axis.set_ylabel("Difference in mean accessibility")
-    fig.savefig(os.path.join(self.results_dir, "EGCG_targets.expression_vs_accessibility.untreated_EGCG_100uM.svg"), bbox_inches="tight")
-
-    # Patient-specific
-    n = set([s.patient_id for s in samples])
-    fig, axis = plt.subplots(len(n) / 2, 2, figsize=(15, 15), sharex=True, sharey=True)
-    axis = axis.flatten()
-    for i, p in enumerate(n):
-        patient = [s for s in samples if s.patient_id == p]
-        u2 = self.coverage_annotated.groupby("ensembl_gene_id").mean()[[s.name for s in patient if s.timepoint_name == 'control']].mean(axis=1)
-        t2 = self.coverage_annotated.groupby("ensembl_gene_id").mean()[[s.name for s in patient if s.timepoint_name == 'EGCG_100uM']].mean(axis=1)
-        axis[i].scatter(genes["log2_fold_change"], (u2.ix[g] - t2.ix[g]))
-        axis[i].set_title(p)
-        axis[i].set_xlabel("Fold change gene expression (log2)")
-        axis[i].set_ylabel("Difference in mean accessibility")
-    fig.savefig(os.path.join(self.results_dir, "EGCG_targets.expression_vs_accessibility.untreated_EGCG_100uM.patient_specific.svg"), bbox_inches="tight")
 
 
 def add_args(parser):
@@ -4125,11 +4052,7 @@ def main():
 
     # temporary:
     for sample in prj.samples:
-        sample.peaks = os.path.join(sample.paths.sample_root, "peaks", sample.name + "_peaks.narrowPeak")
         sample.summits = os.path.join(sample.paths.sample_root, "peaks", sample.name + "_summits.bed")
-        sample.mapped = os.path.join(sample.paths.sample_root, "mapped", sample.name + ".trimmed.bowtie2.bam")
-        sample.filtered = os.path.join(sample.paths.sample_root, "mapped", sample.name + ".trimmed.bowtie2.filtered.bam")
-        sample.coverage = os.path.join(sample.paths.sample_root, "coverage", sample.name + ".cov")
 
     # work only with ATAC-seq samples
     prj.samples = [sample for sample in prj.samples if sample.library == "ATAC-seq" and sample.cell_type not in ["AML", "pHSC", "LSC"]]
@@ -4194,14 +4117,6 @@ def main():
         for sample in sp.samples:
             sample.subproject = subproject
         prj.samples += sp.samples
-
-    # temporary:
-    for sample in prj.samples:
-        sample.peaks = os.path.join(sample.paths.sample_root, "peaks", sample.name + "_peaks.narrowPeak")
-        sample.summits = os.path.join(sample.paths.sample_root, "peaks", sample.name + "_summits.bed")
-        sample.mapped = os.path.join(sample.paths.sample_root, "mapped", sample.name + ".trimmed.bowtie2.bam")
-        sample.filtered = os.path.join(sample.paths.sample_root, "mapped", sample.name + ".trimmed.bowtie2.filtered.bam")
-        sample.coverage = os.path.join(sample.paths.sample_root, "coverage", sample.name + ".cov")
 
     # work only with ATAC-seq samples
     prj.samples = [sample for sample in prj.samples if sample.library == "ATAC-seq" and sample.cell_type not in ["AML", "pHSC", "LSC"]]
