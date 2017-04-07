@@ -894,6 +894,93 @@ class Analysis(object):
                         axis[pc, i].legend(by_label.values(), by_label.keys())
         fig.savefig(os.path.join(self.results_dir, "{}.all_sites.pca.svg".format(self.name)), bbox_inches="tight")
 
+        # plot Figure 1c
+        # patients sorted by leftmost point between timepoints
+        x = pd.DataFrame(x_new, index=X.columns, columns=["PC{}".format(i) for i in range(1, 1 + x_new.shape[1])])
+        xx = x.apply(lambda j: (j - j.mean()) / j.std(), axis=0)
+        xx = xx[xx.index.get_level_values("patient_id") != "CLL16"]
+
+        order = xx.groupby(level=['patient_id']).apply(lambda x: min(x.loc[x.index.get_level_values("timepoint_name") == "after_Ibrutinib", "PC3"].squeeze(), x.loc[x.index.get_level_values("timepoint_name") == "before_Ibrutinib", "PC3"].squeeze()))
+        order = order[[type(i) is np.float64 for i in order]].sort_values()
+        order.name = "patient_change"
+        order = order.to_frame()
+        order['patient_change_order'] = order['patient_change'].rank()
+        xx = pd.merge(xx.reset_index(), order.reset_index()).set_index(xx.index.names + ["patient_change_order"]).sort_index(axis=0, level=["patient_change_order", "timepoint_name"])
+
+        g = sns.PairGrid(xx.reset_index(), x_vars=xx.columns[:4], y_vars=["sample_name"], hue="timepoint_name", size=6, aspect=.5)
+        g.map(sns.stripplot, size=10, orient="h")
+        g.savefig(os.path.join(self.results_dir, "{}.all_sites.pca.PC1-4.stripplot.min_sorted.svg".format(self.name)), bbox_inches="tight")
+
+        g = sns.PairGrid(xx.reset_index(), x_vars=xx.columns[:4], y_vars=["patient_id"], hue="timepoint_name", size=6, aspect=.5)
+        g.map(sns.stripplot, size=10, orient="h")
+        g.savefig(os.path.join(self.results_dir, "{}.all_sites.pca.PC1-4.stripplot.patient_centric.min_sorted.svg".format(self.name)), bbox_inches="tight")
+
+        # patients sorted by ammount changed between timepoints
+        x = pd.DataFrame(x_new, index=X.columns, columns=["PC{}".format(i) for i in range(1, 1 + x_new.shape[1])])
+        xx = x.apply(lambda j: (j - j.mean()) / j.std(), axis=0)
+        xx = xx[xx.index.get_level_values("patient_id") != "CLL16"]
+
+        order = xx.groupby(level=['patient_id']).apply(lambda x: abs(x.loc[x.index.get_level_values("timepoint_name") == "after_Ibrutinib", "PC3"].squeeze() - x.loc[x.index.get_level_values("timepoint_name") == "before_Ibrutinib", "PC3"].squeeze()))
+        order = order[[type(i) is np.float64 for i in order]].sort_values()
+        order.name = "patient_change"
+        order = order.to_frame()
+        order['patient_change_order'] = order['patient_change'].rank()
+        xx = pd.merge(xx.reset_index(), order.reset_index()).set_index(xx.index.names + ["patient_change_order"]).sort_index(axis=0, level=["patient_change_order", "timepoint_name"])
+
+        g = sns.PairGrid(xx.reset_index(), x_vars=xx.columns[:4], y_vars=["sample_name"], hue="timepoint_name", size=6, aspect=.5)
+        g.map(sns.stripplot, size=10, orient="h")
+        g.savefig(os.path.join(self.results_dir, "{}.all_sites.pca.PC1-4.stripplot.diff_sorted.svg".format(self.name)), bbox_inches="tight")
+
+        g = sns.PairGrid(xx.reset_index(), x_vars=xx.columns[:4], y_vars=["patient_id"], hue="timepoint_name", size=6, aspect=.5)
+        g.map(sns.stripplot, size=10, orient="h")
+        g.savefig(os.path.join(self.results_dir, "{}.all_sites.pca.PC1-4.stripplot.patient_centric.diff_sorted.svg".format(self.name)), bbox_inches="tight")
+
+        # PCA
+        fig, axis = plt.subplots(1, len(to_plot), figsize=(4 * len(to_plot), 4 * 1))
+        for i, attr in enumerate(to_plot):
+            for j in range(len(xx)):
+                try:
+                    label = getattr(samples[j], to_plot[i])
+                except AttributeError:
+                    label = np.nan
+                axis[i].scatter(xx.ix[j][0], xx.ix[j][2], s=50, color=color_dataframe.ix[attr][j], label=label)
+            axis[i].set_title(to_plot[i])
+            axis[i].set_xlabel("PC {}".format(1))
+            axis[i].set_ylabel("PC {}".format(3))
+            axis[i].set_xticklabels(axis[i].get_xticklabels(), visible=False)
+            axis[i].set_yticklabels(axis[i].get_yticklabels(), visible=False)
+
+            # Unique legend labels
+            handles, labels = axis[i].get_legend_handles_labels()
+            by_label = OrderedDict(zip(labels, handles))
+            if any([type(c) in [str, unicode] for c in by_label.keys()]) and len(by_label) <= 20:
+                if not any([re.match("^\d", c) for c in by_label.keys()]):
+                    axis[i].legend(by_label.values(), by_label.keys())
+        fig.savefig(os.path.join(self.results_dir, "{}.all_sites.pca.PC1vs3.svg".format(self.name)), bbox_inches="tight")
+
+        # plot PC 1 vs 3
+        fig, axis = plt.subplots(1, len(to_plot), figsize=(4 * len(to_plot), 4 * 1))
+        for i, attr in enumerate(to_plot):
+            for j in range(len(xx)):
+                try:
+                    label = getattr(samples[j], to_plot[i])
+                except AttributeError:
+                    label = np.nan
+                axis[i].scatter(xx.ix[j][0], xx.ix[j][2], s=50, color=color_dataframe.ix[attr][j], label=label)
+            axis[i].set_title(to_plot[i])
+            axis[i].set_xlabel("PC {}".format(1))
+            axis[i].set_ylabel("PC {}".format(3))
+            axis[i].set_xticklabels(axis[i].get_xticklabels(), visible=False)
+            axis[i].set_yticklabels(axis[i].get_yticklabels(), visible=False)
+
+            # Unique legend labels
+            handles, labels = axis[i].get_legend_handles_labels()
+            by_label = OrderedDict(zip(labels, handles))
+            if any([type(c) in [str, unicode] for c in by_label.keys()]) and len(by_label) <= 20:
+                if not any([re.match("^\d", c) for c in by_label.keys()]):
+                    axis[i].legend(by_label.values(), by_label.keys())
+        fig.savefig(os.path.join(self.results_dir, "{}.all_sites.pca.PC1vs3.svg".format(self.name)), bbox_inches="tight")
+
         #
 
         # # Test association of PCs with attributes
