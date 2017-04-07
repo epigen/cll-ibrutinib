@@ -4383,6 +4383,48 @@ def characterize_regions_function(df, output_dir, prefix, results_dir="results",
     results.to_csv(os.path.join(output_dir, "%s_regions.enrichr.csv" % prefix), index=False, encoding='utf-8')
 
 
+def characterize_cohort(analysis):
+    df = analysis.prj.sheet.df
+    df = df[df["patient_id"] != "CLL16"]
+
+    order = df.groupby(['patient_id'])['time_since_treatment'].min().rank()
+    order.name = "patient_change_order"
+    order = order.to_frame()
+    df = pd.merge(df, order.reset_index()).sort_values(["patient_change_order", "timepoint_name"])
+
+    # stripplot of timecourse
+    g = sns.PairGrid(data=df, x_vars="time_since_treatment", y_vars=["patient_id"], hue="timepoint_name", size=6, aspect=.5)
+    g.axes[0][0].axvline(0, linestyle="--", color="black", alpha=0.8)
+    # g.axes[0][0].set_xscale("log")
+    g.map(sns.stripplot, size=10, orient="h")
+    g.savefig(os.path.join(analysis.results_dir, "{}.cohort_desription.min_time_sorted.stripplot.svg".format(analysis.name)), bbox_inches="tight")
+
+    # heatmap of patient attributes
+    attributes = [
+        "patient_id", "timepoint_name", "patient_gender", "patient_age_at_collection",
+        "ighv_mutation_status", "CD38_cells_percentage", "leuko_count (10^3/uL)", "% lymphocytes", "purity (CD5+/CD19+)", "%CD19/CD38", "% CD3", "% CD14", "% B cells", "% T cells",
+        "del11q", "del13q", "del17p", "tri12", "p53",
+        "time_since_treatment", "treatment_response"]
+
+    df2 = df[df["timepoint_name"] == "before_Ibrutinib"].drop_duplicates()
+
+    color_dataframe = pd.DataFrame(
+        analysis.get_level_colors(index=df2.set_index(attributes).index),
+        index=attributes,
+        columns=df2['patient_id'])
+
+    fig, axis = plt.subplots(1, 1, figsize=(6, 6))
+    for i, patient in enumerate(color_dataframe.index):
+        for j, attr in enumerate(color_dataframe.columns):
+            axis.scatter(i, j, color=color_dataframe.loc[patient, attr], s=175, marker="s")
+    axis.set_yticks(range(len(color_dataframe.columns)))
+    axis.set_yticklabels(color_dataframe.columns, rotation=0, ha="right")
+    axis.set_xticks(range(len(color_dataframe.index)))
+    axis.set_xticklabels(color_dataframe.index, rotation=90, ha="right")
+    sns.despine(fig, top=True, bottom=True, left=True, right=True)
+    fig.savefig(os.path.join(analysis.results_dir, "{}.cohort_desription.min_time_sorted.heatmap.svg".format(analysis.name)), bbox_inches="tight")
+
+
 def add_args(parser):
     """
     Options for project and pipelines.
