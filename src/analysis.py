@@ -984,6 +984,8 @@ class Analysis(object):
         #
 
         # # Test association of PCs with attributes
+        x = pd.DataFrame(x_new)
+        xx = x.apply(lambda j: (j - j.mean()) / j.std(), axis=0)
         associations = list()
         for pc in range(pcs):
             for attr in attributes[1:]:
@@ -3851,6 +3853,38 @@ def make_network(analysis):
     for attribute in changes_atac.columns:
         nx.set_node_attributes(F, "atac {}".format(attribute), {str(y): float(changes_atac[attribute].ix[y]) if y in p else 0.0 for y in F.nodes()})
     nx.write_gexf(F, os.path.join("data", "pharmacoscopy.all_interactions.gexf"))
+
+
+def predict(analysis):
+    from sklearn.linear_model import ElasticNet
+
+    # Load pharma
+    sensitivity = pd.read_csv(os.path.join("metadata", "pharmacoscopy_score_v3.csv"))
+    auc = pd.read_csv(os.path.join("metadata", "pharmacoscopy_AUC_v3.csv")).dropna()
+    auc["AUC"] *= -1  # transform AUC to inverse
+
+    # transform to pivot
+    sens_pivot = pd.pivot_table(data=sensitivity, index="drug", columns=['sample_id'], values="score")
+    auc_pivot = pd.pivot_table(data=auc, index="drug", columns=['sample_id'], values="AUC")
+
+    # Load ATAC
+    analysis.accessibility
+
+    # match ATAC and pharma
+    matching_samples = [s for s in analysis.samples if s.sample_id in sensitivity['sample_id'].drop_duplicates().tolist()]
+    accessibility = analysis.accessibility[[s.name for s in matching_samples]]
+    sens_pivot = sens_pivot[[s.sample_id for s in matching_samples]]
+    auc_pivot = auc_pivot[[s.sample_id for s in matching_samples]]
+
+    # for score, AUC
+    # for absolute and timepoint difference
+    # for each drug fit, predict with CV
+
+    X_train = accessibility.apply(lambda x: (x - x.mean()) / x.std(), axis=1)
+    Y_train = sens_pivot.ix[sens_pivot.index[0]]
+
+    lm = ElasticNet(precompute=True, l1_ratio=0.5, alpha=0.0005, max_iter=10000, )
+    lm.fit(X_train.T, Y_train)
 
 
 def DESeq_analysis(counts_matrix, experiment_matrix, variable, covariates, output_prefix, alpha=0.05):
