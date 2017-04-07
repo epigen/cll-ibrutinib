@@ -825,7 +825,7 @@ class Analysis(object):
         mds = MDS(n_jobs=-1)
         x_new = mds.fit_transform(X.T)
         # transform again
-        x = pd.DataFrame(x_new)
+        x = pd.DataFrame(x_new, index=X.columns.get_level_values("sample_name"), columns=["D{}".format(i) for i in range(x_new.shape[1])])
         xx = x.apply(lambda j: (j - j.mean()) / j.std(), axis=0)
 
         fig, axis = plt.subplots(1, len(to_plot), figsize=(4 * len(to_plot), 4 * 1))
@@ -855,7 +855,7 @@ class Analysis(object):
         pca = PCA()
         x_new = pca.fit_transform(X.T)
         # transform again
-        x = pd.DataFrame(x_new)
+        x = pd.DataFrame(x_new, index=X.columns, columns=["PC{}".format(i) for i in range(1, 1 + x_new.shape[1])])
         xx = x.apply(lambda j: (j - j.mean()) / j.std(), axis=0)
 
         # plot % explained variance per PC
@@ -879,7 +879,7 @@ class Analysis(object):
                         label = getattr(samples[j], to_plot[i])
                     except AttributeError:
                         label = np.nan
-                    axis[pc, i].scatter(xx.ix[j][pc], xx.ix[j][pc + 1], s=50, color=color_dataframe.ix[attr][j], label=label)
+                    axis[pc, i].scatter(xx.loc[j, pc], xx.loc[j, pc + 1], s=50, color=color_dataframe.loc[attr, j], label=label)
                 axis[pc, i].set_title(to_plot[i])
                 axis[pc, i].set_xlabel("PC {}".format(pc + 1))
                 axis[pc, i].set_ylabel("PC {}".format(pc + 2))
@@ -3128,7 +3128,7 @@ def pharmacoscopy(analysis):
     n.name = "n_drugs"
     changes = changes.join(n)
     changes.to_csv(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.differential.changes.csv"))
-    changes = pd.read_csv(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.differential.changes.csv"))
+    changes = pd.read_csv(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.differential.changes.csv"), index_col=0)
 
     # scatter
     fit = lowess(b, a, return_sorted=False)
@@ -3492,10 +3492,13 @@ def atac_to_pathway(analysis, samples=None):
     fig.savefig(os.path.join(analysis.results_dir, "pathway-pharmacoscopy.scatter.png"), bbox_inches='tight', dpi=300)
 
     # globally
-    pharma_global = pd.read_csv(os.path.join("results", "pharmacoscopy", "pharmacoscopy.sensitivity.pathway_space.differential.abs_diff.csv"), index_col=0, header=None, squeeze=True)
-    pharma_global.name = "pharmacoscopy"
+    pharma_global = pd.read_csv(os.path.join("results", "pharmacoscopy", "pharmacoscopy.sensitivity.pathway_space.differential.changes.csv"), index_col=0)
+    # filter out drugs/pathways which after Ibrutinib are not more CLL-specific
+    # pharma_global = pharma_global[pharma_global['after_Ibrutinib'] >= 0]
 
-    p = changes.join(pharma_global)
+    pharma_change = pharma_global['fold_change']
+    pharma_change.name = "pharmacoscopy"
+    p = changes.join(pharma_change)
 
     # scatter
     n_to_label = 15
@@ -3511,8 +3514,11 @@ def atac_to_pathway(analysis, samples=None):
         axis.text(p['fold_change'].ix[path], p['pharmacoscopy'].ix[path], path, ha="right")
     for path in combined_diff.sort_values().tail(n_to_label).index:
         axis.text(p['fold_change'].ix[path], p['pharmacoscopy'].ix[path], path, ha="left")
+    axis.set_xlabel("ATAC-seq change in pathway accessibility", ha="center")
+    axis.set_ylabel("Pharmacoscopy change in pathway sensitivity", ha="center")
     sns.despine(fig)
     fig.savefig(os.path.join(analysis.results_dir, "atac-pharmacoscopy.across_patients.scatter.svg"), bbox_inches='tight', dpi=300)
+    # fig.savefig(os.path.join(analysis.results_dir, "atac-pharmacoscopy.across_patients.scatter.only_positive.svg"), bbox_inches='tight', dpi=300)
 
     # individually
     pharma_patient = pd.read_csv(os.path.join("results", "pharmacoscopy", "pharmacoscopy.sensitivity.pathway_space.differential.patient_specific.abs_diff.csv"), index_col=0)
@@ -3544,6 +3550,101 @@ def atac_to_pathway(analysis, samples=None):
     sns.despine(fig)
     fig.savefig(os.path.join(analysis.results_dir, "pathway-pharmacoscopy.patient_specific.scatter.png"), bbox_inches='tight', dpi=300)
 
+    # Dissect specific pathways
+    n_paths = 5
+    paths_of_interest = [
+        "Proteasome", "N-Glycan biosynthesis", "Terpenoid backbone biosynthesis", "Legionellosis"]
+    paths_of_interest = combined_diff.sort_values().tail(n_to_label).index
+    # path_control = ["Regulation of lipolysis in adipocytes",
+    #                 "Dilated cardiomyopathy",
+    #                 "PPAR signaling pathway",
+    #                 "Salivary secretion",
+    #                 "Protein processing in endoplasmic reticulum",
+    #                 "Rap1 signaling pathway",
+    #                 "Adrenergic signaling in cardiomyocytes"]
+    path_control = combined_diff[(combined_diff > -.01) & (combined_diff < .01)]
+
+    # pharmacoscopy sensitivity
+
+    # Make drug - sample pivot table
+    sensitivity['id'] = sensitivity['patient_id'] + " - " + sensitivity['timepoint_name']
+    sens_pivot = pd.pivot_table(data=sensitivity, index="drug", columns=['id', 'patient_id', 'sample_id', 'pharmacoscopy_id', 'timepoint_name'], values="score")
+    # transform into time differentials
+    sens_diff = pd.DataFrame()
+    for patient in sens_pivot.columns.get_level_values("patient_id"):
+        try:
+            a = sens_pivot[sens_pivot.columns[
+                (sens_pivot.columns.get_level_values("patient_id") == patient) &
+                (sens_pivot.columns.get_level_values("timepoint_name") == "after_Ibrutinib")]].squeeze()
+            b = sens_pivot[sens_pivot.columns[
+                (sens_pivot.columns.get_level_values("patient_id") == patient) &
+                (sens_pivot.columns.get_level_values("timepoint_name") == "before_Ibrutinib")]].squeeze()
+        except:
+            continue
+        sens_diff[patient] = a - b
+
+    drugs = analysis.drug_annotation[analysis.drug_annotation["kegg_pathway_name"].isin(paths_of_interest)]['drug'].drop_duplicates()
+    ctrl_drugs = analysis.drug_annotation[analysis.drug_annotation["kegg_pathway_name"].isin(path_control)]['drug'].drop_duplicates()
+    ctrl_drugs = ctrl_drugs[~ctrl_drugs.isin(drugs)]
+
+    g = sns.clustermap(
+        sens_pivot.ix[drugs.tolist() + ctrl_drugs.tolist()], metric="correlation", row_cluster=False, col_cluster=True) # , z_score=1
+    g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+    g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+
+    g = sns.clustermap(
+        p[['before_Ibrutinib', 'after_Ibrutinib']].ix[paths_of_interest + path_control],
+        row_cluster=False, col_cluster=False)
+    g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+    g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+
+    g = sns.clustermap(
+        sens_diff,
+        row_cluster=True, col_cluster=True)
+    g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+    g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+
+    g = sns.clustermap(
+        sens_diff.ix[drugs.tolist() + ctrl_drugs.tolist()],
+        metric="correlation", row_cluster=False, col_cluster=True)
+    g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+    g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+
+    #
+
+    # Similarly, for ATAC
+    pathway_genes = pickle.load(open(os.path.join("metadata", "pathway_gene_annotation_kegg.pickle"), "rb"))
+    paths_of_interest = ["Proteasome"]
+    index = chrom_annot.loc[(chrom_annot['gene_name'].isin([y for p in paths_of_interest for y in pathway_genes[p]])), 'gene_name'].index
+    path_cov = (cov.ix[index][[s.name for s in pc_samples]] / cov[[s.name for s in pc_samples]].sum(axis=0)) * 1e6
+
+    cov_diff = pd.DataFrame()
+    for patient in path_cov.columns.get_level_values("patient_id"):
+        try:
+            a = path_cov.T[
+                (path_cov.columns.get_level_values("patient_id") == patient) &
+                (path_cov.columns.get_level_values("timepoint_name") == "after_Ibrutinib")].T.squeeze()
+            b = path_cov.T[
+                (path_cov.columns.get_level_values("patient_id") == patient) &
+                (path_cov.columns.get_level_values("timepoint_name") == "before_Ibrutinib")].T.squeeze()
+        except:
+            continue
+        cov_diff[patient] = a - b
+
+    path_cov.columns = path_cov.columns.get_level_values("sample_name")
+
+    g = sns.clustermap(
+        path_cov,
+        metric="correlation", row_cluster=True, col_cluster=True, z_score=0)
+    g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+    g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+
+    g = sns.clustermap(
+        cov_diff,
+        metric="correlation", row_cluster=True, col_cluster=True)
+    g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+    g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+
 
 def make_network(analysis):
     """
@@ -3555,6 +3656,47 @@ def make_network(analysis):
     the scores reflect the number and direction of interactions
     """
     import networkx as nx
+
+    # global drug changes
+    sensitivity = pd.read_csv(os.path.join("metadata", "pharmacoscopy_score_v3.csv"))
+    sensitivity['p_id'] = sensitivity['patient_id'].astype(str) + " " + sensitivity['timepoint_name'].astype(str)
+    sensitivity_pivot = pd.pivot_table(sensitivity, index="drug", columns="p_id", values="score")
+    a = sensitivity_pivot[sensitivity_pivot.columns[sensitivity_pivot.columns.str.contains("after")]].mean(axis=1)
+    b = sensitivity_pivot[sensitivity_pivot.columns[sensitivity_pivot.columns.str.contains("before")]].mean(axis=1)
+    drug_changes = a - b
+
+    # global pathway changes (with cross-patient changes)
+    changes = pd.read_csv(os.path.join("results", "pathway.sample_accessibility.size-log2_fold_change-p_value.q_value.csv"), index_col=0)
+    pharma_global = pd.read_csv(os.path.join("results", "pharmacoscopy", "pharmacoscopy.sensitivity.pathway_space.differential.changes.csv"), index_col=0)
+    pharma_change = pharma_global['fold_change']
+    pharma_change.name = "pharmacoscopy"
+    p = changes.join(pharma_change).dropna()
+
+    # normalize changes
+    drug_changes = (drug_changes - drug_changes.mean()) / drug_changes.std()
+    p['fold_change'] = (p['fold_change'] - p['fold_change'].mean()) / p['fold_change'].std()
+    p['pharmacoscopy'] = (p['pharmacoscopy'] - p['pharmacoscopy'].mean()) / p['pharmacoscopy'].std()
+    # cap at +-3
+    drug_changes.loc[drug_changes < -3] = -3
+    drug_changes.loc[drug_changes > 3] = 3
+    p.loc[p['fold_change'] < -3, 'fold_change'] = -3
+    p.loc[p['fold_change'] > 3, 'fold_change'] = 3
+    p.loc[p['pharmacoscopy'] < -3, 'pharmacoscopy'] = -3
+    p.loc[p['pharmacoscopy'] > 3, 'pharmacoscopy'] = 3
+
+    # DRUG -> PATHWAY
+    csv = pd.read_csv(os.path.join("data", "pharmacoscopy.drug-pathway_interactions.tsv"), sep='\t')
+    csv = csv[csv["kegg_pathway_name"].isin(p.index.tolist())]
+    drugs = csv['drug'].unique()
+    G2 = nx.from_pandas_dataframe(csv, source='drug', target='kegg_pathway_name', edge_attr=['interaction_types', "interaction_score"])
+    # G2 = G2.to_directed()
+    nx.set_node_attributes(G2, "entity_type", {x: "drug" if x in drugs else "pathway" for x in G2.nodes()})
+    nx.set_node_attributes(G2, "pathway_size", {x: float(p.loc[p.index == x, "pathway_size"].squeeze()) for x in G2.nodes() if x not in drugs})
+    nx.set_node_attributes(G2, "atacseq_change", {x: float(p.loc[p.index == x, "fold_change"].squeeze()) for x in G2.nodes() if x not in drugs})
+    nx.set_node_attributes(G2, "pharmacoscopy_change", {x: float(p.loc[p.index == x, "pharmacoscopy"].squeeze()) if x not in drugs else float(drug_changes[x]) for x in G2.nodes()})
+
+    nx.write_gexf(G2, os.path.join("data", "pharmacoscopy.drug-pathway_interactions.attributes_changes.gexf"))
+    nx.write_graphml(G2, os.path.join("data", "pharmacoscopy.drug-pathway_interactions.attributes_changes.graphml"))
 
     # Individual accessibility/sensitivity levels per patient
     # atac
