@@ -543,7 +543,121 @@ class Analysis(object):
     # g.ax_row_colors.text(1, -2, "asd", rotation=45)
     # g.ax_row_colors.text(2, -2, "asd", rotation=45)
 
-    def plot_peak_characteristics(self):
+    def plot_peak_characteristics(self, samples=None):
+        def get_sample_reads(bam_file):
+            return pysam.AlignmentFile(bam_file).count()
+
+        def get_peak_number(bed_file):
+            return len(open(bed_file, "r").read().split("\n"))
+
+        def get_total_open_chromatin(bed_file):
+            peaks = pd.read_csv(bed_file, sep="\t", header=None)
+            return (peaks.iloc[:, 2] - peaks.iloc[:, 1]).sum()
+
+        def get_peak_lengths(bed_file):
+            peaks = pd.read_csv(bed_file, sep="\t", header=None)
+            return (peaks.iloc[:, 2] - peaks.iloc[:, 1])
+
+        def get_peak_chroms(bed_file):
+            peaks = pd.read_csv(bed_file, sep="\t", header=None)
+            return peaks.iloc[:, 0].value_counts()
+
+        # Peaks per sample:
+        if samples is None:
+            samples = self.samples
+        stats = pd.DataFrame([
+            map(get_sample_reads, [s.filtered for s in samples]),
+            map(get_peak_number, [s.peaks for s in samples]),
+            map(get_total_open_chromatin, [s.peaks for s in samples])],
+            index=["reads_used", "peak_number", "open_chromatin"],
+            columns=[s.name for s in samples]).T
+
+        stats["peaks_norm"] = (stats["peak_number"] / stats["reads_used"]) * 1e3
+        stats["open_chromatin_norm"] = (stats["open_chromatin"] / stats["reads_used"])
+        stats.to_csv(os.path.join(self.results_dir, "{}.open_chromatin_space.csv".format(self.name)), index=True)
+
+        stats = pd.read_csv(os.path.join(self.results_dir, "{}.open_chromatin_space.csv".format(self.name)), index_col=0)
+        stats['patient_id'] = [s.patient_id for s in samples]
+        stats['timepoint'] = [s.timepoint_name for s in samples]
+        # median lengths per sample (split-apply-combine)
+        stats = pd.merge(stats.reset_index(), stats.groupby('timepoint')['open_chromatin'].median().to_frame(name='group_open_chromatin').reset_index())
+        stats = pd.merge(stats, stats.groupby('timepoint')['open_chromatin_norm'].median().to_frame(name='group_open_chromatin_norm').reset_index())
+
+        # plot
+        fig, axis = plt.subplots(2, 1, figsize=(4 * 2, 6 * 1))
+        stats = stats.sort_values("open_chromatin")
+        sns.barplot(x="index", y="open_chromatin", data=stats.reset_index(), palette="summer", ax=axis[0])
+        stats = stats.sort_values("open_chromatin_norm")
+        sns.barplot(x="index", y="open_chromatin_norm", data=stats.reset_index(), palette="summer", ax=axis[1])
+        axis[0].set_ylabel("Total open chromatin space (bp)")
+        axis[1].set_ylabel("Total open chromatin space (normalized)")
+        axis[0].set_xticklabels(axis[0].get_xticklabels(), rotation=45, ha="right")
+        axis[1].set_xticklabels(axis[1].get_xticklabels(), rotation=45, ha="right")
+        sns.despine(fig)
+        fig.savefig(os.path.join(self.results_dir, "{}.total_open_chromatin_space.per_sample.svg".format(self.name)), bbox_inches="tight")
+
+        # per group
+        fig, axis = plt.subplots(2, 1, figsize=(4 * 2, 6 * 1))
+        stats = stats.sort_values("group_open_chromatin")
+        sns.barplot(x="timepoint", y="open_chromatin", data=stats.reset_index(), palette="summer", ax=axis[0])
+        sns.stripplot(x="timepoint", y="open_chromatin", data=stats.reset_index(), palette="summer", ax=axis[0])
+        sns.factorplot(x="timepoint", y="open_chromatin", hue="patient_id", data=stats.reset_index(), ax=axis[0])
+        stats = stats.sort_values("group_open_chromatin_norm")
+        sns.barplot(x="timepoint", y="open_chromatin_norm", data=stats.reset_index(), palette="summer", ax=axis[1])
+        sns.stripplot(x="timepoint", y="open_chromatin_norm", data=stats.reset_index(), palette="summer", ax=axis[1])
+        sns.factorplot(x="timepoint", y="open_chromatin_norm", hue="patient_id", data=stats.reset_index(), ax=axis[1])
+        axis[0].set_ylabel("Total open chromatin space (bp)")
+        axis[1].set_ylabel("Total open chromatin space (normalized)")
+        axis[0].set_xticklabels(axis[0].get_xticklabels(), rotation=45, ha="right")
+        axis[1].set_xticklabels(axis[1].get_xticklabels(), rotation=45, ha="right")
+        sns.despine(fig)
+        fig.savefig(os.path.join(self.results_dir, "{}.total_open_chromatin_space.per_group.svg".format(self.name)), bbox_inches="tight")
+
+        # plot distribution of peak lengths
+        sample_peak_lengths = map(get_peak_lengths, [s.peaks for s in samples])
+        lengths = pd.melt(pd.DataFrame(sample_peak_lengths, index=[s.name for s in samples]).T, value_name='peak_length', var_name="sample_name").dropna()
+        # lengths['knockout'] = lengths['sample_name'].str.extract("HAP1_(.*?)_")
+        # lengths = lengths[~lengths['sample_name'].str.contains("GFP|HAP1_ATAC-seq_WT_Bulk_")]
+        # # median lengths per sample (split-apply-combine)
+        lengths = pd.merge(lengths, lengths.groupby('sample_name')['peak_length'].median().to_frame(name='mean_peak_length').reset_index())
+        # # median lengths per group (split-apply-combine)
+        # lengths = pd.merge(lengths, lengths.groupby('knockout')['peak_length'].median().to_frame(name='group_mean_peak_length').reset_index())
+
+        lengths = lengths.sort_values("mean_peak_length")
+        fig, axis = plt.subplots(2, 1, figsize=(8 * 1, 4 * 2))
+        sns.boxplot(x="sample_name", y="peak_length", data=lengths, palette="summer", ax=axis[0], showfliers=False)
+        axis[0].set_ylabel("Peak length (bp)")
+        axis[0].set_xticklabels(axis[0].get_xticklabels(), visible=False)
+        sns.boxplot(x="sample_name", y="peak_length", data=lengths, palette="summer", ax=axis[1], showfliers=False)
+        axis[1].set_yscale("log")
+        axis[1].set_ylabel("Peak length (bp)")
+        axis[1].set_xticklabels(axis[1].get_xticklabels(), rotation=45, ha="right")
+        sns.despine(fig)
+        fig.savefig(os.path.join(self.results_dir, "{}.peak_lengths.per_sample.svg".format(self.name)), bbox_inches="tight")
+
+        # lengths = lengths.sort_values("group_mean_peak_length")
+        # fig, axis = plt.subplots(2, 1, figsize=(8 * 1, 4 * 2))
+        # sns.boxplot(x="knockout", y="peak_length", data=lengths, palette="summer", ax=axis[0], showfliers=False)
+        # axis[0].set_ylabel("Peak length (bp)")
+        # axis[0].set_xticklabels(axis[0].get_xticklabels(), visible=False)
+        # sns.boxplot(x="knockout", y="peak_length", data=lengths, palette="summer", ax=axis[1], showfliers=False)
+        # axis[1].set_yscale("log")
+        # axis[1].set_ylabel("Peak length (bp)")
+        # axis[1].set_xticklabels(axis[1].get_xticklabels(), rotation=45, ha="right")
+        # sns.despine(fig)
+        # fig.savefig(os.path.join(self.results_dir, "{}.peak_lengths.per_knockout.svg".format(self.name)), bbox_inches="tight")
+
+        # peaks per chromosome per sample
+        chroms = pd.DataFrame(map(get_peak_chroms, [s.peaks for s in samples]), index=[s.name for s in samples]).fillna(0).T
+        chroms_norm = (chroms / chroms.sum(axis=0)) * 100
+        chroms_norm = chroms_norm.ix[["chr{}".format(i) for i in range(1, 23) + ['X', 'Y', 'M']]]
+
+        fig, axis = plt.subplots(1, 1, figsize=(8 * 1, 8 * 1))
+        sns.heatmap(chroms_norm, square=True, cmap="summer", ax=axis)
+        axis.set_xticklabels(axis.get_xticklabels(), rotation=90, ha="right")
+        axis.set_yticklabels(axis.get_yticklabels(), rotation=0, ha="right")
+        fig.savefig(os.path.join(self.results_dir, "{}.peak_location.per_sample.svg".format(self.name)), bbox_inches="tight")
+
         # Loop at summary statistics:
         # interval lengths
         fig, axis = plt.subplots()
@@ -552,26 +666,22 @@ class Analysis(object):
         axis.set_xlabel("peak width (bp)")
         axis.set_ylabel("frequency")
         sns.despine(fig)
-        fig.savefig(os.path.join(self.results_dir, "cll-ibrutinib.lengths.svg"), bbox_inches="tight")
-        plt.close("all")
+        fig.savefig(os.path.join(self.results_dir, "{}.lengths.svg".format(self.name)), bbox_inches="tight")
 
         # plot support
-        fig, axis = plt.subplots()
-        sns.distplot(self.support["support"], bins=40, ax=axis)
+        fig, axis = plt.subplots(1, figsize=(4, 4))
+        sns.distplot(self.support["support"], bins=100, ax=axis, kde=False)
         axis.set_ylabel("frequency")
         sns.despine(fig)
-        fig.savefig(os.path.join(self.results_dir, "cll-ibrutinib.support.svg"), bbox_inches="tight")
-        plt.close("all")
+        fig.savefig(os.path.join(self.results_dir, "{}.support.svg".format(self.name)), bbox_inches="tight")
 
         # Plot distance to nearest TSS
-        fig, axis = plt.subplots()
-        sns.distplot(self.closest_tss_distances, bins=200, ax=axis)
-        axis.set_xlim(0, 100000)  # cut it at 100kb
+        fig, axis = plt.subplots(1, figsize=(4, 4))
+        sns.distplot([x for x in self.closest_tss_distances if x < 100000], bins=50, ax=axis, kde=False)
         axis.set_xlabel("distance to nearest TSS (bp)")
         axis.set_ylabel("frequency")
         sns.despine(fig)
-        fig.savefig(os.path.join(self.results_dir, "cll-ibrutinib.tss_distance.svg"), bbox_inches="tight")
-        plt.close("all")
+        fig.savefig(os.path.join(self.results_dir, "{}.tss_distance.svg".format(self.name)), bbox_inches="tight")
 
         # Plot genomic regions
         # these are just long lists with genomic regions
@@ -588,7 +698,7 @@ class Analysis(object):
         background = background.ix[data.index]  # same sort order as in the real data
 
         # plot individually
-        fig, axis = plt.subplots(3, sharex=True, sharey=False)
+        fig, axis = plt.subplots(3, sharex=True, sharey=False, figsize=(4, 4 * 3))
         sns.barplot(x=0, y=1, data=data, ax=axis[0])
         sns.barplot(x=0, y=1, data=background, ax=axis[1])
         sns.barplot(x=0, y=1, data=pd.DataFrame([data[0], np.log2((data[1] / background[1]).astype(float))]).T, ax=axis[2])
@@ -601,10 +711,8 @@ class Analysis(object):
         axis[1].set_ylabel("frequency")
         axis[2].set_ylabel("fold-change")
         fig.autofmt_xdate()
-        fig.tight_layout()
         sns.despine(fig)
-        fig.savefig(os.path.join(self.results_dir, "cll-ibrutinib.genomic_regions.svg"), bbox_inches="tight")
-        plt.close("all")
+        fig.savefig(os.path.join(self.results_dir, "{}.genomic_regions.svg".format(self.name)), bbox_inches="tight")
 
         # # Plot chromatin states
         # get long list of chromatin states (for plotting)
@@ -620,7 +728,7 @@ class Analysis(object):
         background = pd.DataFrame([background.keys(), background.values()]).T
         background = background.ix[data.index]  # same sort order as in the real data
 
-        fig, axis = plt.subplots(3, sharex=True, sharey=False)
+        fig, axis = plt.subplots(3, sharex=True, sharey=False, figsize=(4, 4 * 3))
         sns.barplot(x=0, y=1, data=data, ax=axis[0])
         sns.barplot(x=0, y=1, data=background, ax=axis[1])
         sns.barplot(x=0, y=1, data=pd.DataFrame([data[0], np.log2((data[1] / background[1]).astype(float))]).T, ax=axis[2])
@@ -633,9 +741,8 @@ class Analysis(object):
         axis[1].set_ylabel("frequency")
         axis[2].set_ylabel("fold-change")
         fig.autofmt_xdate()
-        fig.tight_layout()
         sns.despine(fig)
-        fig.savefig(os.path.join(self.results_dir, "cll-ibrutinib.chromatin_states.svg"), bbox_inches="tight")
+        fig.savefig(os.path.join(self.results_dir, "{}.chromatin_states.svg".format(self.name)), bbox_inches="tight")
 
         # distribution of count attributes
         data = self.coverage_annotated.copy()
@@ -643,26 +750,24 @@ class Analysis(object):
         fig, axis = plt.subplots(1)
         sns.distplot(data["mean"], rug=False, ax=axis)
         sns.despine(fig)
-        fig.savefig(os.path.join(self.results_dir, "cll-ibrutinib.mean.distplot.svg"), bbox_inches="tight")
+        fig.savefig(os.path.join(self.results_dir, "{}.mean.distplot.svg".format(self.name)), bbox_inches="tight")
 
         fig, axis = plt.subplots(1)
         sns.distplot(data["qv2"], rug=False, ax=axis)
         sns.despine(fig)
-        fig.savefig(os.path.join(self.results_dir, "cll-ibrutinib.qv2.distplot.svg"), bbox_inches="tight")
+        fig.savefig(os.path.join(self.results_dir, "{}.qv2.distplot.svg".format(self.name)), bbox_inches="tight")
 
         fig, axis = plt.subplots(1)
         sns.distplot(data["dispersion"], rug=False, ax=axis)
         sns.despine(fig)
-        fig.savefig(os.path.join(self.results_dir, "cll-ibrutinib.dispersion.distplot.svg"), bbox_inches="tight")
+        fig.savefig(os.path.join(self.results_dir, "{}.dispersion.distplot.svg".format(self.name)), bbox_inches="tight")
 
         # this is loaded now
         df = pd.read_csv(os.path.join(self.data_dir, self.name + "_peaks.support.csv"))
         fig, axis = plt.subplots(1)
         sns.distplot(df["support"], rug=False, ax=axis)
         sns.despine(fig)
-        fig.savefig(os.path.join(self.results_dir, "cll-ibrutinib.support.distplot.svg"), bbox_inches="tight")
-
-        plt.close("all")
+        fig.savefig(os.path.join(self.results_dir, "{}.support.distplot.svg".format(self.name)), bbox_inches="tight")
 
     def plot_coverage(self):
         data = self.coverage_annotated.copy()
@@ -1225,10 +1330,8 @@ class Analysis(object):
             pivot.ix[top_ids],
             cbar_kws={"label": "p-value z-score"},
             col_cluster=True, z_score=0)
-        for tick in g.ax_heatmap.get_xticklabels():
-            tick.set_rotation(90)
-        for tick in g.ax_heatmap.get_yticklabels():
-            tick.set_rotation(0)
+        g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+        g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
         g.fig.savefig(os.path.join("results", "{}.PCA.PC_pvalues.lola_enrichments.svg".format(self.name)), bbox_inches="tight", dpi=300)
 
         # Enrichr
@@ -1245,19 +1348,15 @@ class Analysis(object):
             g = sns.clustermap(
                 -np.log10(pivot.ix[top_ids]), cmap='BuGn',
                 cbar_kws={"label": "-log10(p-value)"}, col_cluster=True, figsize=(6, 15))
-            for tick in g.ax_heatmap.get_xticklabels():
-                tick.set_rotation(90)
-            for tick in g.ax_heatmap.get_yticklabels():
-                tick.set_rotation(0)
+            g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+            g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
             g.fig.savefig(os.path.join("results", "{}.PCA.PC_pvalues.enrichr_enrichments.{}.svg".format(self.name, gene_set_library)), bbox_inches="tight", dpi=300)
 
             g = sns.clustermap(
                 -np.log10(pivot.ix[top_ids]),
                 cbar_kws={"label": "-log10(p-value) z-score"}, col_cluster=True, z_score=0, figsize=(6, 15))
-            for tick in g.ax_heatmap.get_xticklabels():
-                tick.set_rotation(90)
-            for tick in g.ax_heatmap.get_yticklabels():
-                tick.set_rotation(0)
+            g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+            g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
             g.fig.savefig(os.path.join("results", "{}.PCA.PC_pvalues.enrichr_enrichments.{}.z_score.svg".format(self.name, gene_set_library)), bbox_inches="tight", dpi=300)
 
     def differential_region_analysis(
@@ -1586,6 +1685,33 @@ class Analysis(object):
         pathway_enr.to_csv(
             os.path.join(output_dir, "%s.%s.diff_regions.enrichr.csv" % (output_suffix, trait)), index=False)
 
+        # Per gene changes
+        # (for pathway diagram)
+        change_df = self.coverage_annotated.join(df[['log2FoldChange', 'padj']])
+
+        g = pd.merge(
+            change_df.reset_index()[["index", "log2FoldChange", "padj"]],
+            change_df.apply(lambda x: pd.Series(x['gene_name'].split(","), name="gene_name"), axis=1).stack().reset_index(level=1, drop=True).reset_index()
+        )
+        g = g.groupby([0])['log2FoldChange'].apply(lambda x: x.min() if x.mean() < 0 else x.max()).sort_values()
+
+        m = max(abs(g.min()), abs(g.max()))
+        normalizer = matplotlib.colors.Normalize(vmin=-m, vmax=m)
+        # cmap = "coolwarm"
+        # plt.scatter(g.rank(), g, alpha=0.8, color=plt.get_cmap(cmap)(normalizer(g)))
+        pathway_genes = pickle.load(open(os.path.join("metadata", "pathway_gene_annotation_kegg.pickle"), "rb"))
+        pathway_genes2 = pd.concat(
+            [pd.Series(genes, index=[path for _ in genes]) for path, genes in pathway_genes.items()]
+        ).squeeze()
+        pathway_genes3 = pathway_genes2[pathway_genes2.index.str.contains("NF-k|B cell|foxo", case=False)]
+        g2 = g[g.index.isin(pathway_genes3.tolist())]
+
+        fig, axis = plt.subplots(1, figsize=(4, 4))
+        axis.scatter(g2.rank(), g2, color=plt.get_cmap("coolwarm")(normalizer(g2)))
+        for i, gene in enumerate(g2.index):
+            axis.text(g2.rank()[i], g2[i], gene, color=plt.get_cmap("coolwarm")(normalizer(g2[i])))
+        fig.savefig(os.path.join(output_dir, "%s.%s.diff_regions.gene_level.in_pathways.svg" % (output_suffix, trait)), bbox_inches="tight")
+
     def investigate_differential_regions(self, trait="condition", output_suffix="deseq", n=50):
         import string
         from scipy.cluster.hierarchy import fcluster
@@ -1605,13 +1731,11 @@ class Analysis(object):
         regions_pivot = regions_pivot.fillna(0)
 
         # plot correlation
-        fig = sns.clustermap(regions_pivot)
-        for tick in fig.ax_heatmap.get_xticklabels():
-            tick.set_rotation(90)
-        for tick in fig.ax_heatmap.get_yticklabels():
-            tick.set_rotation(0)
-        fig.savefig(os.path.join(output_dir, "region_type_enrichment.svg"), bbox_inches="tight")
-        fig.savefig(os.path.join(output_dir, "region_type_enrichment.png"), bbox_inches="tight", dpi=300)
+        g = sns.clustermap(regions_pivot)
+        g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+        g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+        g.savefig(os.path.join(output_dir, "region_type_enrichment.svg"), bbox_inches="tight")
+        g.savefig(os.path.join(output_dir, "region_type_enrichment.png"), bbox_inches="tight", dpi=300)
 
         #
 
@@ -1630,15 +1754,13 @@ class Analysis(object):
         lola_pivot.columns = lola_pivot.columns.str.decode("utf-8")
 
         # plot correlation
-        fig = sns.clustermap(lola_pivot.T.corr())
-        for tick in fig.ax_heatmap.get_xticklabels():
-            tick.set_rotation(90)
-        for tick in fig.ax_heatmap.get_yticklabels():
-            tick.set_rotation(0)
-        fig.savefig(os.path.join(output_dir, "lola.correlation.svg"), bbox_inches="tight")
-        fig.savefig(os.path.join(output_dir, "lola.correlation.png"), bbox_inches="tight", dpi=300)
+        g = sns.clustermap(lola_pivot.T.corr())
+        g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+        g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+        g.savefig(os.path.join(output_dir, "lola.correlation.svg"), bbox_inches="tight")
+        g.savefig(os.path.join(output_dir, "lola.correlation.png"), bbox_inches="tight", dpi=300)
 
-        cluster_assignment = fcluster(fig.dendrogram_col.linkage, 3, criterion="maxclust")
+        cluster_assignment = fcluster(g.dendrogram_col.linkage, 3, criterion="maxclust")
 
         # Get top n terms which are more in each cluster compared with all others
         top_terms = list()
@@ -1655,13 +1777,11 @@ class Analysis(object):
             cluster_means[cluster] = lola_pivot.ix[cluster_comparisons].mean()
 
         # plot clustered heatmap
-        fig = sns.clustermap(lola_pivot[list(set(top_terms))].replace({np.inf: 50}), z_score=0, figsize=(20, 12))
-        for tick in fig.ax_heatmap.get_xticklabels():
-            tick.set_rotation(90)
-        for tick in fig.ax_heatmap.get_yticklabels():
-            tick.set_rotation(0)
-        fig.savefig(os.path.join(output_dir, "lola.cluster_specific.svg"), bbox_inches="tight")
-        fig.savefig(os.path.join(output_dir, "lola.cluster_specific.png"), bbox_inches="tight", dpi=300)
+        g = sns.clustermap(lola_pivot[list(set(top_terms))].replace({np.inf: 50}), z_score=0, figsize=(20, 12))
+        g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+        g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+        g.savefig(os.path.join(output_dir, "lola.cluster_specific.svg"), bbox_inches="tight")
+        g.savefig(os.path.join(output_dir, "lola.cluster_specific.png"), bbox_inches="tight", dpi=300)
 
         #
 
@@ -1679,15 +1799,13 @@ class Analysis(object):
         motifs_pivot = motifs_pivot.replace({np.inf: 300})
 
         # plot correlation
-        fig = sns.clustermap(motifs_pivot.T.corr())
-        for tick in fig.ax_heatmap.get_xticklabels():
-            tick.set_rotation(90)
-        for tick in fig.ax_heatmap.get_yticklabels():
-            tick.set_rotation(0)
-        fig.savefig(os.path.join(output_dir, "motifs.correlation.svg"), bbox_inches="tight")
-        fig.savefig(os.path.join(output_dir, "motifs.correlation.png"), bbox_inches="tight", dpi=300)
+        g = sns.clustermap(motifs_pivot.T.corr())
+        g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+        g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+        g.savefig(os.path.join(output_dir, "motifs.correlation.svg"), bbox_inches="tight")
+        g.savefig(os.path.join(output_dir, "motifs.correlation.png"), bbox_inches="tight", dpi=300)
 
-        cluster_assignment = fcluster(fig.dendrogram_col.linkage, 5, criterion="maxclust")
+        cluster_assignment = fcluster(g.dendrogram_col.linkage, 5, criterion="maxclust")
 
         # Get top n terms which are more in each cluster compared with all others
         top_terms = list()
@@ -1701,23 +1819,19 @@ class Analysis(object):
             top_terms += terms.dropna().head(n).index.tolist()
 
         # plot clustered heatmap
-        fig = sns.clustermap(motifs_pivot[list(set(top_terms))], figsize=(20, 12))  # .apply(lambda x: (x - x.mean()) / x.std())
-        for tick in fig.ax_heatmap.get_xticklabels():
-            tick.set_rotation(90)
-        for tick in fig.ax_heatmap.get_yticklabels():
-            tick.set_rotation(0)
-        fig.savefig(os.path.join(output_dir, "motifs.cluster_specific.svg"), bbox_inches="tight")
-        fig.savefig(os.path.join(output_dir, "motifs.cluster_specific.png"), bbox_inches="tight", dpi=300)
+        g = sns.clustermap(motifs_pivot[list(set(top_terms))], figsize=(20, 12))  # .apply(lambda x: (x - x.mean()) / x.std())
+        g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+        g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+        g.savefig(os.path.join(output_dir, "motifs.cluster_specific.svg"), bbox_inches="tight")
+        g.savefig(os.path.join(output_dir, "motifs.cluster_specific.png"), bbox_inches="tight", dpi=300)
 
         df = motifs_pivot[list(set(top_terms))]  # .apply(lambda x: (x - x.mean()) / x.std())
 
-        fig = sns.clustermap(df[df.mean(1) > -0.5], figsize=(20, 12))
-        for tick in fig.ax_heatmap.get_xticklabels():
-            tick.set_rotation(90)
-        for tick in fig.ax_heatmap.get_yticklabels():
-            tick.set_rotation(0)
-        fig.savefig(os.path.join(output_dir, "motifs.cluster_specific.only_some.svg"), bbox_inches="tight")
-        fig.savefig(os.path.join(output_dir, "motifs.cluster_specific.only_some.png"), bbox_inches="tight", dpi=300)
+        g = sns.clustermap(df[df.mean(1) > -0.5], figsize=(20, 12))
+        g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+        g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+        g.savefig(os.path.join(output_dir, "motifs.cluster_specific.only_some.svg"), bbox_inches="tight")
+        g.savefig(os.path.join(output_dir, "motifs.cluster_specific.only_some.png"), bbox_inches="tight", dpi=300)
 
         #
 
@@ -1743,15 +1857,13 @@ class Analysis(object):
             enrichr_pivot = enrichr_pivot.replace({np.inf: 300})
 
             # plot correlation
-            fig = sns.clustermap(enrichr_pivot.T.corr())
-            for tick in fig.ax_heatmap.get_xticklabels():
-                tick.set_rotation(90)
-            for tick in fig.ax_heatmap.get_yticklabels():
-                tick.set_rotation(0)
-            fig.savefig(os.path.join(output_dir, "enrichr.%s.correlation.svg" % gene_set_library), bbox_inches="tight")
-            fig.savefig(os.path.join(output_dir, "enrichr.%s.correlation.png" % gene_set_library), bbox_inches="tight", dpi=300)
+            g = sns.clustermap(enrichr_pivot.T.corr())
+            g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+            g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+            g.savefig(os.path.join(output_dir, "enrichr.%s.correlation.svg" % gene_set_library), bbox_inches="tight")
+            g.savefig(os.path.join(output_dir, "enrichr.%s.correlation.png" % gene_set_library), bbox_inches="tight", dpi=300)
 
-            cluster_assignment = fcluster(fig.dendrogram_col.linkage, 4, criterion="maxclust")
+            cluster_assignment = fcluster(g.dendrogram_col.linkage, 4, criterion="maxclust")
 
             # Get top n terms which are more in each cluster compared with all others
             top_terms = list()
@@ -1765,13 +1877,11 @@ class Analysis(object):
                 top_terms += terms.dropna().head(n).index.tolist()
 
             # plot clustered heatmap
-            fig = sns.clustermap(enrichr_pivot[list(set(top_terms))], figsize=(20, 12))  # .apply(lambda x: (x - x.mean()) / x.std())
-            for tick in fig.ax_heatmap.get_xticklabels():
-                tick.set_rotation(90)
-            for tick in fig.ax_heatmap.get_yticklabels():
-                tick.set_rotation(0)
-            fig.savefig(os.path.join(output_dir, "enrichr.%s.cluster_specific.svg" % gene_set_library), bbox_inches="tight")
-            fig.savefig(os.path.join(output_dir, "enrichr.%s.cluster_specific.png" % gene_set_library), bbox_inches="tight", dpi=300)
+            g = sns.clustermap(enrichr_pivot[list(set(top_terms))], figsize=(20, 12))  # .apply(lambda x: (x - x.mean()) / x.std())
+            g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+            g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+            g.savefig(os.path.join(output_dir, "enrichr.%s.cluster_specific.svg" % gene_set_library), bbox_inches="tight")
+            g.savefig(os.path.join(output_dir, "enrichr.%s.cluster_specific.png" % gene_set_library), bbox_inches="tight", dpi=300)
 
     # using genes weighted by score
 
@@ -2294,13 +2404,11 @@ class Analysis(object):
         regions_pivot = regions_pivot.fillna(0)
 
         # plot correlation
-        fig = sns.clustermap(regions_pivot)
-        for tick in fig.ax_heatmap.get_xticklabels():
-            tick.set_rotation(90)
-        for tick in fig.ax_heatmap.get_yticklabels():
-            tick.set_rotation(0)
-        fig.savefig(os.path.join(output_dir, "region_type_enrichment.svg"), bbox_inches="tight")
-        fig.savefig(os.path.join(output_dir, "region_type_enrichment.png"), bbox_inches="tight", dpi=300)
+        g = sns.clustermap(regions_pivot)
+        g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+        g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+        g.savefig(os.path.join(output_dir, "region_type_enrichment.svg"), bbox_inches="tight")
+        g.savefig(os.path.join(output_dir, "region_type_enrichment.png"), bbox_inches="tight", dpi=300)
 
         #
 
@@ -2319,15 +2427,13 @@ class Analysis(object):
         lola_pivot.columns = lola_pivot.columns.str.decode("utf-8")
 
         # plot correlation
-        fig = sns.clustermap(lola_pivot.T.corr())
-        for tick in fig.ax_heatmap.get_xticklabels():
-            tick.set_rotation(90)
-        for tick in fig.ax_heatmap.get_yticklabels():
-            tick.set_rotation(0)
-        fig.savefig(os.path.join(output_dir, "lola.correlation.svg"), bbox_inches="tight")
-        fig.savefig(os.path.join(output_dir, "lola.correlation.png"), bbox_inches="tight", dpi=300)
+        g = sns.clustermap(lola_pivot.T.corr())
+        g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+        g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+        g.savefig(os.path.join(output_dir, "lola.correlation.svg"), bbox_inches="tight")
+        g.savefig(os.path.join(output_dir, "lola.correlation.png"), bbox_inches="tight", dpi=300)
 
-        cluster_assignment = fcluster(fig.dendrogram_col.linkage, 3, criterion="maxclust")
+        cluster_assignment = fcluster(g.dendrogram_col.linkage, 3, criterion="maxclust")
 
         # Get top n terms which are more in each cluster compared with all others
         top_terms = list()
@@ -2344,13 +2450,11 @@ class Analysis(object):
             cluster_means[cluster] = lola_pivot.ix[cluster_patients].mean()
 
         # plot clustered heatmap
-        fig = sns.clustermap(lola_pivot[list(set(top_terms))].replace({np.inf: 50}), z_score=0, figsize=(20, 12))
-        for tick in fig.ax_heatmap.get_xticklabels():
-            tick.set_rotation(90)
-        for tick in fig.ax_heatmap.get_yticklabels():
-            tick.set_rotation(0)
-        fig.savefig(os.path.join(output_dir, "lola.cluster_specific.svg"), bbox_inches="tight")
-        fig.savefig(os.path.join(output_dir, "lola.cluster_specific.png"), bbox_inches="tight", dpi=300)
+        g = sns.clustermap(lola_pivot[list(set(top_terms))].replace({np.inf: 50}), z_score=0, figsize=(20, 12))
+        g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+        g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+        g.savefig(os.path.join(output_dir, "lola.cluster_specific.svg"), bbox_inches="tight")
+        g.savefig(os.path.join(output_dir, "lola.cluster_specific.png"), bbox_inches="tight", dpi=300)
 
         #
 
@@ -2368,15 +2472,13 @@ class Analysis(object):
         motifs_pivot = motifs_pivot.replace({np.inf: 300})
 
         # plot correlation
-        fig = sns.clustermap(motifs_pivot.T.corr())
-        for tick in fig.ax_heatmap.get_xticklabels():
-            tick.set_rotation(90)
-        for tick in fig.ax_heatmap.get_yticklabels():
-            tick.set_rotation(0)
-        fig.savefig(os.path.join(output_dir, "motifs.correlation.svg"), bbox_inches="tight")
-        fig.savefig(os.path.join(output_dir, "motifs.correlation.png"), bbox_inches="tight", dpi=300)
+        g = sns.clustermap(motifs_pivot.T.corr())
+        g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+        g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+        g.savefig(os.path.join(output_dir, "motifs.correlation.svg"), bbox_inches="tight")
+        g.savefig(os.path.join(output_dir, "motifs.correlation.png"), bbox_inches="tight", dpi=300)
 
-        cluster_assignment = fcluster(fig.dendrogram_col.linkage, 5, criterion="maxclust")
+        cluster_assignment = fcluster(g.dendrogram_col.linkage, 5, criterion="maxclust")
 
         # Get top n terms which are more in each cluster compared with all others
         top_terms = list()
@@ -2390,23 +2492,19 @@ class Analysis(object):
             top_terms += terms.dropna().head(n).index.tolist()
 
         # plot clustered heatmap
-        fig = sns.clustermap(motifs_pivot[list(set(top_terms))].apply(lambda x: (x - x.mean()) / x.std()), figsize=(20, 12))  #
-        for tick in fig.ax_heatmap.get_xticklabels():
-            tick.set_rotation(90)
-        for tick in fig.ax_heatmap.get_yticklabels():
-            tick.set_rotation(0)
-        fig.savefig(os.path.join(output_dir, "motifs.cluster_specific.svg"), bbox_inches="tight")
-        fig.savefig(os.path.join(output_dir, "motifs.cluster_specific.png"), bbox_inches="tight", dpi=300)
+        g = sns.clustermap(motifs_pivot[list(set(top_terms))].apply(lambda x: (x - x.mean()) / x.std()), figsize=(20, 12))  #
+        g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+        g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+        g.savefig(os.path.join(output_dir, "motifs.cluster_specific.svg"), bbox_inches="tight")
+        g.savefig(os.path.join(output_dir, "motifs.cluster_specific.png"), bbox_inches="tight", dpi=300)
 
         df = motifs_pivot[list(set(top_terms))].apply(lambda x: (x - x.mean()) / x.std())
 
-        fig = sns.clustermap(df[df.mean(1) > -0.5], figsize=(20, 12))
-        for tick in fig.ax_heatmap.get_xticklabels():
-            tick.set_rotation(90)
-        for tick in fig.ax_heatmap.get_yticklabels():
-            tick.set_rotation(0)
-        fig.savefig(os.path.join(output_dir, "motifs.cluster_specific.only_some.svg"), bbox_inches="tight")
-        fig.savefig(os.path.join(output_dir, "motifs.cluster_specific.only_some.png"), bbox_inches="tight", dpi=300)
+        g = sns.clustermap(df[df.mean(1) > -0.5], figsize=(20, 12))
+        g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+        g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+        g.savefig(os.path.join(output_dir, "motifs.cluster_specific.only_some.svg"), bbox_inches="tight")
+        g.savefig(os.path.join(output_dir, "motifs.cluster_specific.only_some.png"), bbox_inches="tight", dpi=300)
 
         #
 
@@ -2432,15 +2530,13 @@ class Analysis(object):
             enrichr_pivot = enrichr_pivot.replace({np.inf: 300})
 
             # plot correlation
-            fig = sns.clustermap(enrichr_pivot.T.corr())
-            for tick in fig.ax_heatmap.get_xticklabels():
-                tick.set_rotation(90)
-            for tick in fig.ax_heatmap.get_yticklabels():
-                tick.set_rotation(0)
-            fig.savefig(os.path.join(output_dir, "enrichr.%s.correlation.svg" % gene_set_library), bbox_inches="tight")
-            fig.savefig(os.path.join(output_dir, "enrichr.%s.correlation.png" % gene_set_library), bbox_inches="tight", dpi=300)
+            g = sns.clustermap(enrichr_pivot.T.corr())
+            g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+            g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+            g.savefig(os.path.join(output_dir, "enrichr.%s.correlation.svg" % gene_set_library), bbox_inches="tight")
+            g.savefig(os.path.join(output_dir, "enrichr.%s.correlation.png" % gene_set_library), bbox_inches="tight", dpi=300)
 
-            cluster_assignment = fcluster(fig.dendrogram_col.linkage, 4, criterion="maxclust")
+            cluster_assignment = fcluster(g.dendrogram_col.linkage, 4, criterion="maxclust")
 
             # Get top n terms which are more in each cluster compared with all others
             top_terms = list()
@@ -2454,13 +2550,11 @@ class Analysis(object):
                 top_terms += terms.dropna().head(n).index.tolist()
 
             # plot clustered heatmap
-            fig = sns.clustermap(enrichr_pivot[list(set(top_terms))].apply(lambda x: (x - x.mean()) / x.std()), figsize=(20, 12))  #
-            for tick in fig.ax_heatmap.get_xticklabels():
-                tick.set_rotation(90)
-            for tick in fig.ax_heatmap.get_yticklabels():
-                tick.set_rotation(0)
-            fig.savefig(os.path.join(output_dir, "enrichr.%s.cluster_specific.svg" % gene_set_library), bbox_inches="tight")
-            fig.savefig(os.path.join(output_dir, "enrichr.%s.cluster_specific.png" % gene_set_library), bbox_inches="tight", dpi=300)
+            g = sns.clustermap(enrichr_pivot[list(set(top_terms))].apply(lambda x: (x - x.mean()) / x.std()), figsize=(20, 12))  #
+            g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+            g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+            g.savefig(os.path.join(output_dir, "enrichr.%s.cluster_specific.svg" % gene_set_library), bbox_inches="tight")
+            g.savefig(os.path.join(output_dir, "enrichr.%s.cluster_specific.png" % gene_set_library), bbox_inches="tight", dpi=300)
 
 
 def annotate_drugs(analysis, sensitivity):
@@ -2699,11 +2793,9 @@ def annotate_drugs(analysis, sensitivity):
     for drug in annot['drug'].drop_duplicates()[~annot['drug'].drop_duplicates().isin(cat_pivot.index)]:
         cat_pivot.loc[drug, :] = pd.np.nan
     # heatmap
-    fig = sns.clustermap(cat_pivot.fillna(0), figsize=(7, 12))
-    for tick in fig.ax_heatmap.get_xticklabels():
-        tick.set_rotation(90)
-    for tick in fig.ax_heatmap.get_yticklabels():
-        tick.set_rotation(0)
+    g = sns.clustermap(cat_pivot.fillna(0), figsize=(7, 12))
+    g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+    g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
     fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-categories.binary.png"), bbox_inches="tight", dpi=300)
     fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-categories.binary.svg"), bbox_inches="tight")
 
@@ -2713,20 +2805,16 @@ def annotate_drugs(analysis, sensitivity):
     for drug in annot['drug'].drop_duplicates()[~annot['drug'].drop_duplicates().isin(gene_pivot.index)]:
         gene_pivot.loc[drug, :] = pd.np.nan
     # heatmap
-    fig = sns.clustermap(gene_pivot.fillna(0), figsize=(20, 10))
-    for tick in fig.ax_heatmap.get_xticklabels():
-        tick.set_rotation(90)
-    for tick in fig.ax_heatmap.get_yticklabels():
-        tick.set_rotation(0)
+    g = sns.clustermap(gene_pivot.fillna(0), figsize=(20, 10))
+    g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+    g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
     fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-gene_interactions.png"), bbox_inches="tight", dpi=300)
     fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-gene_interactions.svg"), bbox_inches="tight")
     # binary
     path_pivot_binary = (~gene_pivot.isnull()).astype(int)
-    fig = sns.clustermap(path_pivot_binary, figsize=(20, 10))
-    for tick in fig.ax_heatmap.get_xticklabels():
-        tick.set_rotation(90)
-    for tick in fig.ax_heatmap.get_yticklabels():
-        tick.set_rotation(0)
+    g = sns.clustermap(path_pivot_binary, figsize=(20, 10))
+    g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+    g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
     fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-gene_interactions.binary.png"), bbox_inches="tight", dpi=300)
     fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-gene_interactions.binary.svg"), bbox_inches="tight")
 
@@ -2736,20 +2824,16 @@ def annotate_drugs(analysis, sensitivity):
     for drug in annot['drug'].drop_duplicates()[~annot['drug'].drop_duplicates().isin(path_pivot.index)]:
         path_pivot.loc[drug, :] = pd.np.nan
     # heatmap
-    fig = sns.clustermap(path_pivot.fillna(0), figsize=(20, 10))
-    for tick in fig.ax_heatmap.get_xticklabels():
-        tick.set_rotation(90)
-    for tick in fig.ax_heatmap.get_yticklabels():
-        tick.set_rotation(0)
+    g = sns.clustermap(path_pivot.fillna(0), figsize=(20, 10))
+    g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+    g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
     fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-pathway_interactions.png"), bbox_inches="tight", dpi=300)
     fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-pathway_interactions.svg"), bbox_inches="tight")
     # binary
     path_pivot_binary = (~path_pivot.isnull()).astype(int)
-    fig = sns.clustermap(path_pivot_binary, figsize=(20, 10))
-    for tick in fig.ax_heatmap.get_xticklabels():
-        tick.set_rotation(90)
-    for tick in fig.ax_heatmap.get_yticklabels():
-        tick.set_rotation(0)
+    g = sns.clustermap(path_pivot_binary, figsize=(20, 10))
+    g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+    g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
     fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-pathway_interactions.binary.png"), bbox_inches="tight", dpi=300)
     fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-pathway_interactions.binary.svg"), bbox_inches="tight")
 
@@ -2808,27 +2892,23 @@ def pharmacoscopy(analysis):
         if plot:
             if 'master_fig' not in globals():
                 global master_fig
-                master_fig = sns.clustermap(np.log2(1 + pathway_matrix.fillna(0)), figsize=(30, 15))
-                for tick in master_fig.ax_heatmap.get_xticklabels():
+                master_g = sns.clustermap(np.log2(1 + pathway_matrix.fillna(0)), figsize=(30, 15))
+                for tick in master_g.ax_heatmap.get_xticklabels():
                     tick.set_rotation(90)
-                for tick in master_fig.ax_heatmap.get_yticklabels():
+                for tick in master_g.ax_heatmap.get_yticklabels():
                     tick.set_rotation(0)
                 master_fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-pathway_interactions.score.png"), bbox_inches="tight", dpi=300)
                 # fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-pathway_interactions.score.svg"), bbox_inches="tight")
 
-                fig = sns.clustermap(np.log2(1 + pathway_matrix_norm.fillna(0)), figsize=(30, 15), row_linkage=master_fig.dendrogram_row.linkage, col_linkage=master_fig.dendrogram_col.linkage)
-                for tick in fig.ax_heatmap.get_xticklabels():
-                    tick.set_rotation(90)
-                for tick in fig.ax_heatmap.get_yticklabels():
-                    tick.set_rotation(0)
+                g = sns.clustermap(np.log2(1 + pathway_matrix_norm.fillna(0)), figsize=(30, 15), row_linkage=master_fig.dendrogram_row.linkage, col_linkage=master_fig.dendrogram_col.linkage)
+                g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+                g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
                 fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-pathway_interactions.weighted_score.png"), bbox_inches="tight", dpi=300)
                 # fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-pathway_interactions.weighted_score.svg"), bbox_inches="tight")
 
-            fig = sns.clustermap(np.log2(1 + pathway_scores.fillna(0)), figsize=(30, 15), row_linkage=master_fig.dendrogram_row.linkage, col_linkage=master_fig.dendrogram_col.linkage)
-            for tick in fig.ax_heatmap.get_xticklabels():
-                tick.set_rotation(90)
-            for tick in fig.ax_heatmap.get_yticklabels():
-                tick.set_rotation(0)
+            g = sns.clustermap(np.log2(1 + pathway_scores.fillna(0)), figsize=(30, 15), row_linkage=master_fig.dendrogram_row.linkage, col_linkage=master_fig.dendrogram_col.linkage)
+            g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+            g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
             fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-pathway_interactions.{}.sample_scores.png".format(plot_label)), bbox_inches="tight", dpi=300)
             # fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-pathway_interactions.{}.sample_scores.svg".format(plot_label)), bbox_inches="tight")
 
@@ -2891,22 +2971,51 @@ def pharmacoscopy(analysis):
         # Heatmaps
         # clustered
         df_pivot = pd.pivot_table(df, index="drug", columns="p_id", values=name)
-        fig = sns.clustermap(df_pivot, figsize=(8, 20))
-        for tick in fig.ax_heatmap.get_xticklabels():
-            tick.set_rotation(90)
-        for tick in fig.ax_heatmap.get_yticklabels():
-            tick.set_rotation(0)
-        fig.savefig(os.path.join(output_dir, "{}.svg".format(name)), bbox_inches="tight")
+        g = sns.clustermap(df_pivot, figsize=(8, 20))
+        g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90, ha="right")
+        g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0, ha="left")
+        g.savefig(os.path.join(output_dir, "{}.svg".format(name)), bbox_inches="tight")
 
         # sorted
         p = df_pivot.ix[df_pivot.sum(axis=1).sort_values().index]  # sort drugs
         p = p[p.sum(axis=0).sort_values().index]  # sort samples
-        fig = sns.clustermap(p, figsize=(8, 20), col_cluster=False, row_cluster=False)
-        for tick in fig.ax_heatmap.get_xticklabels():
-            tick.set_rotation(90)
-        for tick in fig.ax_heatmap.get_yticklabels():
-            tick.set_rotation(0)
-        fig.savefig(os.path.join(output_dir, "{}.both_axis_sorted.svg".format(name)), bbox_inches="tight")\
+        g = sns.clustermap(p, figsize=(8, 20), col_cluster=False, row_cluster=False, metric="correlation")
+        g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90, ha="right")
+        g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0, ha="left")
+        g.savefig(os.path.join(output_dir, "{}.both_axis_sorted.svg".format(name)), bbox_inches="tight")\
+
+        # only from greg's drug list
+        sel_drugs = pd.read_csv(os.path.join("metadata", "signif_drugs.txt")).squeeze()
+        df_pivot = pd.pivot_table(df, index="drug", columns="p_id", values=name)
+        p = df_pivot.loc[sel_drugs, ~df_pivot.columns.str.contains("CLL2")].T
+
+        g = sns.clustermap(p, figsize=(8, 20), square=True, metric="correlation", cbar_kws={"label": "Pharmacoscopy score"})
+        g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90, ha="right")
+        g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0, ha="left")
+        g.savefig(os.path.join(output_dir, "{}.selected_drugs.svg".format(name)), bbox_inches="tight")
+        g = sns.clustermap(p, figsize=(8, 20), col_cluster=True, row_cluster=False, square=True, metric="correlation", cbar_kws={"label": "Pharmacoscopy score"})
+        g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90, ha="right")
+        g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0, ha="left")
+        g.savefig(os.path.join(output_dir, "{}.selected_drugs.both_axis_sorted.svg".format(name)), bbox_inches="tight")
+        # Z-score
+        df_pivot = pd.pivot_table(df, index="drug", columns="p_id", values=name)
+        p = df_pivot.loc[sel_drugs, ~df_pivot.columns.str.contains("CLL2")].T
+        p.index = pd.MultiIndex.from_arrays([[int(x[0][3:]) for x in p.index.str.split(" ")], [x[1] for x in p.index.str.split(" ")]])
+        p = p.sortlevel(level=[0, 1], ascending=[True, False])
+
+        # z-transform
+        p = z_score(p)
+
+        # select drugs
+
+        g = sns.clustermap(p, figsize=(8, 20), square=True, metric="correlation", cbar_kws={"label": "Pharmacoscopy score\n(Z-score)"})
+        g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90, ha="right")
+        g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0, ha="left")
+        # g.savefig(os.path.join(output_dir, "{}.selected_drugs.z_score.svg".format(name)), bbox_inches="tight")
+        g = sns.clustermap(p, figsize=(8, 20), col_cluster=True, row_cluster=False, square=True, metric="correlation", cbar_kws={"label": "Pharmacoscopy score\n(Z-score)"})
+        g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+        g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+        # g.savefig(os.path.join(output_dir, "{}.selected_drugs.both_axis_sorted.z_score.svg".format(name)), bbox_inches="tight")
 
         # across samples in each timepoint - sorted
         a = df_pivot[df_pivot.columns[df_pivot.columns.str.contains("after")]].mean(axis=1)
@@ -2917,12 +3026,10 @@ def pharmacoscopy(analysis):
         p = pd.DataFrame([a, b]).T
         p = p.ix[df_pivot.sum(axis=1).sort_values().index]  # sort drugs
         p = p[p.sum(axis=0).sort_values().index]  # sort samples
-        fig = sns.clustermap(p, figsize=(8, 20), col_cluster=False, row_cluster=False)
-        for tick in fig.ax_heatmap.get_xticklabels():
-            tick.set_rotation(90)
-        for tick in fig.ax_heatmap.get_yticklabels():
-            tick.set_rotation(0)
-        fig.savefig(os.path.join(output_dir, "{}.across_patients.both_axis_sorted.svg".format(name)), bbox_inches="tight")
+        g = sns.clustermap(p, figsize=(8, 20), col_cluster=False, row_cluster=False)
+        g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+        g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+        g.savefig(os.path.join(output_dir, "{}.across_patients.both_axis_sorted.svg".format(name)), bbox_inches="tight")
 
         # scatter
         from statsmodels.nonparametric.smoothers_lowess import lowess
@@ -2952,22 +3059,18 @@ def pharmacoscopy(analysis):
         abs_diff = a - b
 
         # clustered
-        fig = sns.clustermap(abs_diff.dropna(), figsize=(20, 8))
-        for tick in fig.ax_heatmap.get_xticklabels():
-            tick.set_rotation(90)
-        for tick in fig.ax_heatmap.get_yticklabels():
-            tick.set_rotation(0)
-        fig.savefig(os.path.join(output_dir, "{}.timepoint_change.abs_diff.svg".format(name)), bbox_inches="tight")
+        g = sns.clustermap(abs_diff.dropna(), figsize=(20, 8))
+        g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+        g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+        g.savefig(os.path.join(output_dir, "{}.timepoint_change.abs_diff.svg".format(name)), bbox_inches="tight")
 
         # clustered
         p = abs_diff.dropna().ix[abs_diff.dropna().sum(axis=1).sort_values().index]  # sort drugs
         p = p[p.sum(axis=0).sort_values().index]  # sort samples
-        fig = sns.clustermap(p, figsize=(20, 8), col_cluster=False, row_cluster=False)
-        for tick in fig.ax_heatmap.get_xticklabels():
-            tick.set_rotation(90)
-        for tick in fig.ax_heatmap.get_yticklabels():
-            tick.set_rotation(0)
-        fig.savefig(os.path.join(output_dir, "{}.timepoint_change.abs_diff.both_axis_sorted.svg".format(name)), bbox_inches="tight")
+        g = sns.clustermap(p, figsize=(20, 8), col_cluster=False, row_cluster=False)
+        g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+        g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+        g.savefig(os.path.join(output_dir, "{}.timepoint_change.abs_diff.both_axis_sorted.svg".format(name)), bbox_inches="tight")
 
     # Unsupervised analysis on pharmacoscopy data
     from sklearn.decomposition import PCA
@@ -3159,32 +3262,24 @@ def pharmacoscopy(analysis):
     fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.across_patients.rank.scatter.svg"), bbox_inches='tight')
 
     # vizualize in heatmaps
-    fig = sns.clustermap(pathway_space.T.dropna(), figsize=(20, 8))
-    for tick in fig.ax_heatmap.get_xticklabels():
-        tick.set_rotation(90)
-    for tick in fig.ax_heatmap.get_yticklabels():
-        tick.set_rotation(0)
+    g = sns.clustermap(pathway_space.T.dropna(), figsize=(20, 8))
+    g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+    g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
     fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.png"), dpi=300, bbox_inches='tight')
     # fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.svg"), bbox_inches='tight')
-    fig = sns.clustermap(pathway_space.T.dropna(), figsize=(20, 8), z_score=1)
-    for tick in fig.ax_heatmap.get_xticklabels():
-        tick.set_rotation(90)
-    for tick in fig.ax_heatmap.get_yticklabels():
-        tick.set_rotation(0)
+    g = sns.clustermap(pathway_space.T.dropna(), figsize=(20, 8), z_score=1)
+    g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+    g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
     fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.z_score.png"), dpi=300, bbox_inches='tight')
     # fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.z_score.svg"), bbox_inches='tight')
-    fig = sns.clustermap(new_drugs.T.dropna(), figsize=(20, 8))
-    for tick in fig.ax_heatmap.get_xticklabels():
-        tick.set_rotation(90)
-    for tick in fig.ax_heatmap.get_yticklabels():
-        tick.set_rotation(0)
+    g = sns.clustermap(new_drugs.T.dropna(), figsize=(20, 8))
+    g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+    g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
     fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.new_drugs.png"), dpi=300, bbox_inches='tight')
     # fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.new_drugs.svg"), bbox_inches='tight')
-    fig = sns.clustermap(new_drugs.T.dropna(), figsize=(20, 8), z_score=0)
-    for tick in fig.ax_heatmap.get_xticklabels():
-        tick.set_rotation(90)
-    for tick in fig.ax_heatmap.get_yticklabels():
-        tick.set_rotation(0)
+    g = sns.clustermap(new_drugs.T.dropna(), figsize=(20, 8), z_score=0)
+    g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+    g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
     fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.new_drugs.z_score.png"), dpi=300, bbox_inches='tight')
     # fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.new_drugs.z_score.svg"), bbox_inches='tight')
 
@@ -3443,6 +3538,13 @@ def atac_to_pathway(analysis, samples=None):
     g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90, fontsize=6)
     g.fig.savefig(os.path.join(analysis.results_dir, "pathway.mean_accessibility.svg"), bbox_inches="tight", dpi=300)
 
+    # ordered
+    p = path_cov_z.sort_index(level=['patient_id', 'timepoint_name'])
+    g = sns.clustermap(p.reset_index(drop=True), figsize=(30, 8), yticklabels=p.index.get_level_values("sample_name"), col_cluster=True, row_cluster=False)
+    g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0, fontsize=6)
+    g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90, fontsize=6)
+    g.fig.savefig(os.path.join(analysis.results_dir, "pathway.mean_accessibility.ordered.svg"), bbox_inches="tight", dpi=300)
+
     # sorted
     p = path_cov[path_cov.sum(axis=0).sort_values().index]
     p = p.ix[p.sum(axis=1).sort_values().index]
@@ -3459,8 +3561,15 @@ def atac_to_pathway(analysis, samples=None):
     a.name = "after_Ibrutinib"
     b = path_cov[path_cov.index.get_level_values("timepoint_name") == "before_Ibrutinib"].mean()
     b.name = "before_Ibrutinib"
-    fc = (a - b)
+    fc = (a - b).sort_values()
     fc.name = "fold_change"
+
+    # plot again but only top-bottom ordered by patient
+    p = path_cov_z.sort_index(level=['patient_id', 'timepoint_name'])[fc.head(20).index.tolist() + fc.tail(20).index.tolist()]
+    g = sns.clustermap(p.reset_index(drop=True), metric="correlation", square=True, figsize=(6, 6), yticklabels=p.index.get_level_values("sample_name"), col_cluster=True, row_cluster=True)
+    g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0, fontsize=6)
+    g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90, fontsize=6)
+    g.fig.savefig(os.path.join(analysis.results_dir, "pathway.mean_accessibility.ordered.top_bottom.all_patients.svg"), bbox_inches="tight", dpi=300)
 
     # p-values & q-values
     params = norm.fit([j for i in r_fcs for j in i])
@@ -3581,33 +3690,59 @@ def atac_to_pathway(analysis, samples=None):
     fig.savefig(os.path.join(analysis.results_dir, "pathway-pharmacoscopy.scatter.png"), bbox_inches='tight', dpi=300)
 
     # globally
+    changes = pd.read_csv(os.path.join(analysis.results_dir, "pathway.sample_accessibility.size-log2_fold_change-p_value.q_value.csv"), index_col=0)
     pharma_global = pd.read_csv(os.path.join("results", "pharmacoscopy", "pharmacoscopy.sensitivity.pathway_space.differential.changes.csv"), index_col=0)
     # filter out drugs/pathways which after Ibrutinib are not more CLL-specific
     # pharma_global = pharma_global[pharma_global['after_Ibrutinib'] >= 0]
 
     pharma_change = pharma_global['fold_change']
     pharma_change.name = "pharmacoscopy"
-    p = changes.join(pharma_change)
+    p = changes.join(pharma_change).fillna(0)
 
     # scatter
     n_to_label = 15
-    combined_diff = (p['fold_change'] + p['pharmacoscopy']).dropna()
-    normalizer = matplotlib.colors.Normalize(vmin=0, vmax=combined_diff.max())
+    custom_labels = p.index[p.index.str.contains("apoptosis|pi3k|proteasome|ribosome|nfkb", case=False)].tolist()
 
-    fig, axis = plt.subplots(1, 1, figsize=(4 * 1, 4 * 1))
-    axis.scatter(p['fold_change'], p['pharmacoscopy'], alpha=0.8, color=plt.get_cmap("Blues")(normalizer(abs(combined_diff))))
-    axis.axhline(0, color="black", linestyle="--", alpha=0.5)
-    axis.axvline(0, color="black", linestyle="--", alpha=0.5)
-    # annotate top pathways
-    for path in combined_diff.sort_values().head(n_to_label).index:
-        axis.text(p['fold_change'].ix[path], p['pharmacoscopy'].ix[path], path, ha="right")
-    for path in combined_diff.sort_values().tail(n_to_label).index:
-        axis.text(p['fold_change'].ix[path], p['pharmacoscopy'].ix[path], path, ha="left")
-    axis.set_xlabel("ATAC-seq change in pathway accessibility", ha="center")
-    axis.set_ylabel("Pharmacoscopy change in pathway sensitivity", ha="center")
-    sns.despine(fig)
-    fig.savefig(os.path.join(analysis.results_dir, "atac-pharmacoscopy.across_patients.scatter.svg"), bbox_inches='tight', dpi=300)
-    # fig.savefig(os.path.join(analysis.results_dir, "atac-pharmacoscopy.across_patients.scatter.only_positive.svg"), bbox_inches='tight', dpi=300)
+    combined_diff = (p['fold_change'] + p['pharmacoscopy']).dropna()
+    m = max(abs(combined_diff.min()), abs(combined_diff.max()))
+    normalizer = matplotlib.colors.Normalize(vmin=-m, vmax=m)
+
+    for cmap in ["Spectral_r", "coolwarm", "BrBG"]:
+        already = list()
+        fig, axis = plt.subplots(1, 1, figsize=(4 * 1, 4 * 1))
+        axis.scatter(p['fold_change'], p['pharmacoscopy'], alpha=0.8, color=plt.get_cmap(cmap)(normalizer(combined_diff)))
+        axis.axhline(0, color="black", linestyle="--", alpha=0.5)
+        axis.axvline(0, color="black", linestyle="--", alpha=0.5)
+        # annotate top pathways
+        # combined
+        for path in [x for x in combined_diff.sort_values().head(n_to_label).index if x not in already]:
+            axis.text(p['fold_change'].ix[path], p['pharmacoscopy'].ix[path], path, ha="right")
+            already.append(path)
+        for path in [x for x in combined_diff.sort_values().tail(n_to_label).index if x not in already]:
+            axis.text(p['fold_change'].ix[path], p['pharmacoscopy'].ix[path], path, ha="left")
+            already.append(path)
+        # individual
+        for path in [x for x in p['fold_change'].sort_values().head(n_to_label).index if x not in already]:
+            axis.text(p['fold_change'].ix[path], p['pharmacoscopy'].ix[path], path, ha="right", color="orange")
+            already.append(path)
+        for path in [x for x in p['pharmacoscopy'].sort_values().head(n_to_label).index if x not in already]:
+            axis.text(p['fold_change'].ix[path], p['pharmacoscopy'].ix[path], path, ha="left", color="green")
+            already.append(path)
+        for path in [x for x in p['fold_change'].sort_values().tail(n_to_label).index if x not in already]:
+            axis.text(p['fold_change'].ix[path], p['pharmacoscopy'].ix[path], path, ha="left", color="orange")
+            already.append(path)
+        for path in [x for x in p['pharmacoscopy'].sort_values().tail(n_to_label).index if x not in already]:
+            axis.text(p['fold_change'].ix[path], p['pharmacoscopy'].ix[path], path, ha="right", color="green")
+            already.append(path)
+        # custom
+        for path in [x for x in custom_labels if x not in already]:
+            axis.text(p['fold_change'].ix[path], p['pharmacoscopy'].ix[path], path, ha="center", color="blue")
+            already.append(path)
+        axis.set_xlabel("ATAC-seq change in pathway accessibility", ha="center")
+        axis.set_ylabel("Pharmacoscopy change in pathway sensitivity", ha="center")
+        sns.despine(fig)
+        fig.savefig(os.path.join(analysis.results_dir, "atac-pharmacoscopy.across_patients.scatter.{}.svg".format(cmap)), bbox_inches='tight', dpi=300)
+        # fig.savefig(os.path.join(analysis.results_dir, "atac-pharmacoscopy.across_patients.scatter.only_positive.svg"), bbox_inches='tight', dpi=300)
 
     # individually
     pharma_patient = pd.read_csv(os.path.join("results", "pharmacoscopy", "pharmacoscopy.sensitivity.pathway_space.differential.patient_specific.abs_diff.csv"), index_col=0)
@@ -4631,6 +4766,16 @@ def main():
     # analysis.region_annotation_b = pd.read_csv(os.path.join(analysis.results_dir, analysis.name + "_peaks.region_annotation_background.csv"))
     # analysis.chrom_state_annotation = pd.read_csv(os.path.join(analysis.results_dir, analysis.name + "_peaks.chromatin_state.csv"))
     # analysis.chrom_state_annotation_b = pd.read_csv(os.path.join(analysis.results_dir, analysis.name + "_peaks.chromatin_state_background.csv"))
+
+    #
+
+    # Pharmacoscopy part
+    sensitivity = pd.read_csv(os.path.join("metadata", "pharmacoscopy_score_v3.csv"))
+    annotate_drugs(analysis, sensitivity)
+    pharmacoscopy(analysis)
+    atac_to_pathway(analysis)
+    make_network(analysis)
+
 
 if __name__ == '__main__':
     try:
