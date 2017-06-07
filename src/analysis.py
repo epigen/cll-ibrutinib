@@ -4334,18 +4334,19 @@ def enrichr(dataframe, gene_set_libraries=None, kind="genes"):
             # "Epigenomics_Roadmap_HM_ChIP-seq",
             # "ENCODE_TF_ChIP-seq_2015",
             # "ENCODE_Histone_Modifications_2015",
-            "OMIM_Expanded",
-            "TF-LOF_Expression_from_GEO",
-            "Single_Gene_Perturbations_from_GEO_down",
-            "Single_Gene_Perturbations_from_GEO_up",
-            "Disease_Perturbations_from_GEO_down",
-            "Disease_Perturbations_from_GEO_up",
-            "Drug_Perturbations_from_GEO_down",
-            "Drug_Perturbations_from_GEO_up",
+            # "OMIM_Expanded",
+            # "TF-LOF_Expression_from_GEO",
+            # "Single_Gene_Perturbations_from_GEO_down",
+            # "Single_Gene_Perturbations_from_GEO_up",
+            # "Disease_Perturbations_from_GEO_down",
+            # "Disease_Perturbations_from_GEO_up",
+            # "Drug_Perturbations_from_GEO_down",
+            # "Drug_Perturbations_from_GEO_up",
             "WikiPathways_2016",
             "Reactome_2016",
             "BioCarta_2016",
-            "NCI-Nature_2016"
+            "NCI-Nature_2016",
+            "Panther_2016"
         ]
     results = pd.DataFrame()
     for gene_set_library in gene_set_libraries:
@@ -4560,6 +4561,805 @@ def characterize_cohort(analysis):
     fig.savefig(os.path.join(analysis.results_dir, "{}.cohort_desription.min_time_sorted.heatmap.svg".format(analysis.name)), bbox_inches="tight")
 
 
+class Analysis(object):
+    """
+    Class to hold functions and data from analysis.
+    """
+    from ngs_toolkit.general import pickle_me
+
+    def __init__(
+            self,
+            name="analysis",
+            samples=None,
+            prj=None,
+            data_dir="data",
+            results_dir="results",
+            pickle_file=None,
+            from_pickle=False,
+            **kwargs):
+        # parse kwargs with default
+        self.name = name
+        self.data_dir = data_dir
+        self.results_dir = results_dir
+        self.samples = samples
+        self.prj = prj
+        if pickle_file is None:
+            pickle_file = os.path.join(results_dir, "analysis.{}.pickle".format(name))
+        self.pickle_file = pickle_file
+
+        for directory in [self.data_dir, self.results_dir]:
+            if not os.path.exists(directory):
+                os.makedirs(directory)
+
+        # parse remaining kwargs
+        self.__dict__.update(kwargs)
+
+        # reload itself if required
+        if from_pickle:
+            self.update()
+
+    @pickle_me
+    def to_pickle(self):
+        pass
+
+    def from_pickle(self):
+        import cPickle as pickle
+        return pickle.load(open(self.pickle_file, 'rb'))
+
+    def update(self):
+        self.__dict__.update(self.from_pickle().__dict__)
+
+
+class RNASeqAnalysis(Analysis):
+    """
+    Class to hold functions and data from analysis.
+    """
+    def __init__(
+            self,
+            name="analysis",
+            samples=None,
+            prj=None,
+            data_dir="data",
+            results_dir="results",
+            pickle_file=None,
+            from_pickle=False,
+            **kwargs):
+        super(RNASeqAnalysis, self).__init__(
+            name=name,
+            data_dir=data_dir,
+            results_dir=results_dir,
+            pickle_file=pickle_file,
+            samples=samples,
+            prj=prj,
+            from_pickle=from_pickle,
+            **kwargs)
+
+    def annotate_with_sample_metadata(
+            self,
+            attributes=["sample_name", "cell_line", "knockout", "replicate", "clone"]):
+
+        samples = [s for s in self.samples if s.name in self.coverage_annotated.columns]
+
+        attrs = list()
+        for attr in attributes:
+            l = list()
+            for sample in samples:  # keep order of samples in matrix
+                try:
+                    l.append(getattr(sample, attr))
+                except AttributeError:
+                    l.append(np.nan)
+            attrs.append(l)
+
+        # Generate multiindex columns
+        index = pd.MultiIndex.from_arrays(attrs, names=attributes)
+        self.accessibility = self.coverage_annotated[[s.name for s in samples]]
+        self.accessibility.columns = index
+
+        # Save
+        self.accessibility.to_csv(os.path.join(self.results_dir, self.name + ".accessibility.annotated_metadata.csv"), index=True)
+
+    def get_level_colors(self, index=None, levels=None, pallete="Paired", cmap="RdBu_r", nan_color=(0.662745, 0.662745, 0.662745, 0.5)):
+        if index is None:
+            index = self.accessibility.columns
+
+        if levels is not None:
+            index = index.droplevel([l.name for l in index.levels if l.name not in levels])
+
+        _cmap = plt.get_cmap(cmap)
+        _pallete = plt.get_cmap(pallete)
+
+        colors = list()
+        for level in index.levels:
+            # determine the type of data in each level
+            most_common = Counter([type(x) for x in level]).most_common()[0][0]
+            print(level.name, most_common)
+
+            # Add either colors based on categories or numerical scale
+            if most_common in [int, float, np.float32, np.float64, np.int32, np.int64]:
+                values = index.get_level_values(level.name)
+                # Create a range of either 0-100 if only positive values are found
+                # or symmetrically from the maximum absolute value found
+                if not any(values.dropna() < 0):
+                    norm = matplotlib.colors.Normalize(vmin=0, vmax=100)
+                else:
+                    r = max(abs(values.min()), abs(values.max()))
+                    norm = matplotlib.colors.Normalize(vmin=-r, vmax=r)
+
+                col = _cmap(norm(values))
+                # replace color for nan cases
+                col[np.where(index.get_level_values(level.name).to_series().isnull().tolist())] = nan_color
+                colors.append(col.tolist())
+            else:
+                n = len(set(index.get_level_values(level.name)))
+                # get n equidistant colors
+                p = [_pallete(1. * i / n) for i in range(n)]
+                color_dict = dict(zip(list(set(index.get_level_values(level.name))), p))
+                # color for nan cases
+                color_dict[np.nan] = nan_color
+                col = [color_dict[x] for x in index.get_level_values(level.name)]
+                colors.append(col)
+
+        return colors
+
+    def collect_bitseq_output(self, samples=None):
+        """
+        Collect gene expression output from Bitseq into expression matrix for `samples`.
+        """
+        if samples is None:
+            samples = self.samples
+
+        first = True
+        for i, sample in enumerate(samples):
+            if first:
+                try:
+                    # read the "tr" file of one sample to get indexes
+                    tr = pd.read_csv(
+                        os.path.join(
+                            sample.paths.sample_root, "bowtie1_{}".format(sample.transcriptome),
+                            "bitSeq",
+                            sample.name + ".tr"),
+                        sep=" ", header=None, skiprows=1,
+                        names=["ensembl_gene_id", "ensembl_transcript_id", "v1", "v2"])
+                except IOError:
+                    print("Sample {} is missing.".format(sample.name))
+                    continue
+                # add id index
+                tr.set_index("ensembl_gene_id", append=False, inplace=True)
+                tr.set_index("ensembl_transcript_id", append=True, inplace=True)
+                # create dataframe
+                expr = pd.DataFrame(index=tr.index)
+                first = False
+
+            # load counts
+            try:
+                counts = pd.read_csv(os.path.join(
+                    sample.paths.sample_root, "bowtie1_{}".format(sample.transcriptome),
+                    "bitSeq",
+                    sample.name + ".counts"), sep=" ")
+            except IOError:
+                print("Sample {} is missing.".format(sample.name))
+                continue
+            counts.index = expr.index
+
+            # Append
+            expr[sample.name] = counts
+
+        return expr
+
+    def get_gene_expression(self, samples=None, attributes=["sample_name", "cell_line", "knockout", "replicate", "clone", "complex_subunit"]):
+        """
+        """
+        def quantile_normalize(df_input):
+            df = df_input.copy()
+            # compute rank
+            dic = {}
+            for col in df:
+                dic.update({col: sorted(df[col])})
+            sorted_df = pd.DataFrame(dic)
+            rank = sorted_df.mean(axis=1).tolist()
+            # sort
+            for col in df:
+                t = np.searchsorted(np.sort(df[col]), df[col])
+                df[col] = [rank[i] for i in t]
+            return df
+
+        if samples is None:
+            samples = [s for s in self.samples if s.library == "RNA-seq"]
+
+        self.count_matrix = self.collect_bitseq_output(samples)
+
+        # Map ensembl gene IDs to gene names
+        import requests
+        url_query = "".join([
+            """http://grch37.ensembl.org/biomart/martservice?query=""",
+            """<?xml version="1.0" encoding="UTF-8"?>""",
+            """<!DOCTYPE Query>""",
+            """<Query  virtualSchemaName = "default" formatter = "CSV" header = "0" uniqueRows = "0" count = "" datasetConfigVersion = "0.6" >""",
+            """<Dataset name = "hsapiens_gene_ensembl" interface = "default" >""",
+            """<Attribute name = "ensembl_gene_id" />""",
+            """<Attribute name = "external_gene_name" />""",
+            """</Dataset>""",
+            """</Query>"""])
+        req = requests.get(url_query, stream=True)
+        mapping = pd.DataFrame((x.strip().split(",") for x in list(req.iter_lines())), columns=["ensembl_gene_id", "gene_name"])
+        self.count_matrix = self.count_matrix.reset_index()
+        self.count_matrix['ensembl_gene_id'] = self.count_matrix['ensembl_gene_id'].str.replace("\..*", "")
+
+        self.count_matrix = pd.merge(self.count_matrix, mapping, how="outer").dropna()
+        self.count_matrix.to_csv(os.path.join(self.results_dir, self.name + ".expression_counts.csv"), index=False)
+
+        # Quantile normalize
+        self.matrix_qnorm = quantile_normalize(self.count_matrix.drop(["ensembl_transcript_id", "ensembl_gene_id", "gene_name"], axis=1))
+
+        # Log2 TPM
+        self.matrix_qnorm_log = np.log2((1 + self.matrix_qnorm) / self.matrix_qnorm.sum(axis=0) * 1e6)
+        self.matrix_qnorm_log = self.count_matrix[["gene_name", "ensembl_gene_id", "ensembl_transcript_id"]].join(self.matrix_qnorm_log)
+        self.matrix_qnorm_log.to_csv(os.path.join(self.results_dir, self.name + ".expression_counts.transcript_level.quantile_normalized.log2_tpm.csv"), index=False)
+
+        # Reduce to gene-level measurements by max of transcripts
+        self.expression_matrix_counts = self.count_matrix.drop(['ensembl_transcript_id'], axis=1).dropna().set_index(['ensembl_gene_id', 'gene_name']).groupby(level=["gene_name"]).max()
+
+        # Quantile normalize
+        self.expression_matrix_qnorm = quantile_normalize(self.expression_matrix_counts)
+
+        # Log2 TPM
+        self.expression = np.log2((1 + self.expression_matrix_qnorm) / self.expression_matrix_qnorm.sum(axis=0) * 1e6)
+
+        # Annotate with sample metadata
+        _samples = [s for s in samples if s.name in self.expression.columns]
+        attrs = list()
+        for attr in attributes:
+            l = list()
+            for sample in _samples:  # keep order of samples in matrix
+                try:
+                    l.append(getattr(sample, attr))
+                except AttributeError:
+                    l.append(np.nan)
+            attrs.append(l)
+
+        # Generate multiindex columns
+        index = pd.MultiIndex.from_arrays(attrs, names=attributes)
+        self.expression_annotated = self.expression[[s.name for s in _samples]]
+        self.expression_annotated.columns = index
+
+        # Save
+        self.expression_matrix_counts.to_csv(os.path.join(self.results_dir, self.name + ".expression_counts.gene_level.csv"), index=True)
+        self.expression_matrix_qnorm.to_csv(os.path.join(self.results_dir, self.name + ".expression_counts.gene_level.quantile_normalized.csv"), index=True)
+        self.expression.to_csv(os.path.join(self.results_dir, self.name + ".expression_counts.gene_level.quantile_normalized.log2_tpm.csv"), index=True)
+        self.expression_annotated.to_csv(os.path.join(self.results_dir, self.name + ".expression_counts.gene_level.quantile_normalized.log2_tpm.annotated_metadata.csv"), index=True)
+
+    def plot_expression_characteristics(self):
+        fig, axis = plt.subplots(figsize=(4, 4 * np.log10(len(self.expression_matrix_counts.columns))))
+        sns.barplot(data=self.expression_matrix_counts.sum().sort_values().reset_index(), y="index", x=0, orient="horiz", color=sns.color_palette("colorblind")[0], ax=axis)
+        axis.set_xlabel("Reads")
+        axis.set_ylabel("Samples")
+        sns.despine(fig)
+        fig.savefig(os.path.join(self.results_dir, "expression.reads_per_sample.svg"), bbox_inches="tight")
+
+        cov = pd.DataFrame()
+        for i in [1, 2, 3, 6, 12, 24, 48, 96, 200, 300, 400, 500, 1000]:
+            cov[i] = self.expression_matrix_counts.apply(lambda x: sum(x >= i))
+
+        fig, axis = plt.subplots(1, 2, figsize=(6 * 2, 6))
+        sns.heatmap(cov.drop([1, 2], axis=1), ax=axis[0], cmap="GnBu", cbar_kws={"label": "Genes covered"})
+        sns.heatmap(cov.drop([1, 2], axis=1).apply(lambda x: (x - x.mean()) / x.std(), axis=0), ax=axis[1], cbar_kws={"label": "Z-score"})
+        for ax in axis:
+            ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
+            ax.set_yticklabels(ax.get_yticklabels(), rotation=0)
+            ax.set_ylabel("Samples")
+            ax.set_xlabel("Genes with #reads")
+        axis[1].set_yticklabels(ax.get_yticklabels(), visible=False)
+        sns.despine(fig)
+        fig.savefig(os.path.join(self.results_dir, "expression.genes_with_reads.svg"), bbox_inches="tight")
+
+        for name, matrix in [("counts", self.expression_matrix_counts), ("qnorm_TPM", self.expression)]:
+            # Boxplot with values per sample
+            to_plot = pd.melt(matrix, var_name="sample")
+
+            fig, axis = plt.subplots()
+            sns.boxplot(data=to_plot, y="sample", x="value", orient="horiz", ax=axis)
+            axis.set_xlabel(name)
+            axis.set_ylabel("Samples")
+            sns.despine(fig)
+            fig.savefig(os.path.join(self.results_dir, "expression.boxplot_per_sample.{}.svg".format(name)), bbox_inches="tight")
+
+        # Plot gene expression along chromossomes
+        import requests
+        url_query = "".join([
+            """http://grch37.ensembl.org/biomart/martservice?query=""",
+            """<?xml version="1.0" encoding="UTF-8"?>""",
+            """<!DOCTYPE Query>""",
+            """<Query  virtualSchemaName = "default" formatter = "CSV" header = "0" uniqueRows = "0" count = "" datasetConfigVersion = "0.6" >""",
+            """<Dataset name = "hsapiens_gene_ensembl" interface = "default" >""",
+            """<Attribute name = "chromosome_name" />""",
+            """<Attribute name = "start_position" />""",
+            """<Attribute name = "end_position" />""",
+            """<Attribute name = "external_gene_name" />""",
+            """</Dataset>""",
+            """</Query>"""])
+        req = requests.get(url_query, stream=True)
+        annot = pd.DataFrame((x.strip().split(",") for x in list(req.iter_lines())), columns=["chr", "start", "end", "gene_name"])
+        gene_order = annot[annot['chr'].isin([str(x) for x in range(22)] + ['X', 'Y'])].sort_values(["chr", "start", "end"])["gene_name"]
+
+        exp = self.expression.ix[gene_order].dropna()
+        data = exp.rolling(int(3e4), axis=0).mean().dropna()
+        plt.pcolor(data)
+
+    def differential_expression_analysis(
+            self, samples, trait="timepoint_name",
+            variables=["atac_seq_batch", "timepoint_name"],
+            output_suffix="ibrutinib_treatment_expression"):
+        """
+        Discover differential regions across samples that are associated with a certain trait.
+        """
+        from ngs_toolkit.general import deseq_analysis
+        sel_samples = [s for s in samples if not pd.isnull(getattr(s, trait))]
+
+        # Get matrix of counts
+        counts_matrix = self.expression_matrix_counts[[s.name for s in sel_samples]]
+
+        # Get experiment matrix
+        experiment_matrix = pd.DataFrame([sample.as_series() for sample in sel_samples], index=[sample.name for sample in sel_samples])
+        # keep only variables
+        experiment_matrix = experiment_matrix[["sample_name"] + variables].fillna("Unknown")
+
+        # Make output dir
+        output_dir = os.path.join(self.results_dir, output_suffix)
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+
+        # Run DESeq2 analysis
+        deseq_table = deseq_analysis(
+            counts_matrix, experiment_matrix, trait, covariates=[x for x in variables if x != trait], output_prefix=os.path.join(output_dir, output_suffix), alpha=0.05)
+
+        # to just read in
+        # deseq_table = pd.read_csv(os.path.join(output_dir, output_suffix) + ".%s.csv" % trait, index_col=0)
+
+        df = self.expression.join(deseq_table)
+        df.to_csv(os.path.join(output_dir, output_suffix) + ".%s.annotated.csv" % trait)
+        df = pd.read_csv(os.path.join(output_dir, output_suffix) + ".%s.annotated.csv" % trait, index_col=0)
+
+        # Extract significant based on p-value and fold-change
+        # diff = df.loc[df.sort_values(["log2FoldChange"]).head(200).index.tolist() + df.sort_values(["log2FoldChange"]).tail(200).index.tolist(), :]
+        diff = df[(df["pvalue"] < 0.01) & (abs(df["log2FoldChange"]) > np.log2(1.25))]
+
+        if diff.shape[0] < 1:
+            print("No significantly different regions found.")
+            return
+
+        # groups = list(set([getattr(s, trait) for s in sel_samples]))
+        comparisons = pd.Series(df['comparison'].unique())
+        groups = sorted(set([y for y in x.split("-") for x in comparisons.tolist()]))
+
+        # Statistics of differential regions
+        import string
+        total_sites = float(self.expression.shape[0])
+
+        total_diff = diff.groupby(["comparison"])['stat'].count().sort_values(ascending=False)
+        fig, axis = plt.subplots(1)
+        sns.barplot(total_diff.values, total_diff.index, orient="h", ax=axis)
+        for t in axis.get_xticklabels():
+            t.set_rotation(0)
+        sns.despine(fig)
+        fig.savefig(os.path.join(output_dir, "%s.%s.number_differential.total.svg" % (output_suffix, trait)), bbox_inches="tight")
+        # percentage of total
+        fig, axis = plt.subplots(1)
+        sns.barplot(
+            (total_diff.values / total_sites) * 100,
+            total_diff.index,
+            orient="h", ax=axis)
+        for t in axis.get_xticklabels():
+            t.set_rotation(0)
+        sns.despine(fig)
+        fig.savefig(os.path.join(output_dir, "%s.%s.number_differential.total_percentage.svg" % (output_suffix, trait)), bbox_inches="tight")
+
+        # direction-dependent
+        diff["direction"] = diff["log2FoldChange"].apply(lambda x: "up" if x >= 0 else "down")
+
+        split_diff = diff.groupby(["comparison", "direction"])['stat'].count().sort_values(ascending=False)
+        fig, axis = plt.subplots(1, figsize=(12, 8))
+        sns.barplot(
+            split_diff.values,
+            split_diff.reset_index()[['comparison', 'direction']].apply(string.join, axis=1),
+            orient="h", ax=axis)
+        for t in axis.get_xticklabels():
+            t.set_rotation(0)
+        sns.despine(fig)
+        fig.savefig(os.path.join(output_dir, "%s.%s.number_differential.split.svg" % (output_suffix, trait)), bbox_inches="tight")
+        # percentage of total
+        fig, axis = plt.subplots(1, figsize=(12, 8))
+        sns.barplot(
+            (split_diff.values / total_sites) * 100,
+            split_diff.reset_index()[['comparison', 'direction']].apply(string.join, axis=1),
+            orient="h", ax=axis)
+        for t in axis.get_xticklabels():
+            t.set_rotation(0)
+        sns.despine(fig)
+        fig.savefig(os.path.join(output_dir, "%s.%s.number_differential.split_percentage.svg" % (output_suffix, trait)), bbox_inches="tight")
+
+        # in same
+        split_diff = diff.groupby(["comparison", "direction"])['stat'].count().sort_values(ascending=False)
+
+        split_diff = split_diff.reset_index()
+        split_diff.loc[split_diff['direction'] == "down", "stat"] = -split_diff.loc[split_diff['direction'] == "down", "stat"]
+        fig, axis = plt.subplots(1, figsize=(6, 3))
+        sns.barplot(
+            x="comparison", y="stat", data=split_diff, hue="direction",  # split=False,
+            order=split_diff.groupby(['comparison'])['stat'].apply(lambda x: sum(abs(x))).sort_values(ascending=False).index,
+            orient="v", ax=axis)
+        axis.axhline(0, color="black", linestyle="--")
+        axis.set_xticklabels(axis.get_xticklabels(), rotation=45, ha="right")
+        sns.despine(fig)
+        fig.savefig(os.path.join(output_dir, "%s.%s.number_differential.split.pos_neg.svg" % (output_suffix, trait)), bbox_inches="tight")
+
+        # percentage of total
+        split_diff['stat'] = (split_diff['stat'].values / total_sites) * 100
+        fig, axis = plt.subplots(1, figsize=(6, 3))
+        sns.barplot(
+            x="comparison", y="stat", data=split_diff, hue="direction",  # split=False,
+            order=split_diff.groupby(['comparison'])['stat'].apply(lambda x: sum(abs(x))).sort_values(ascending=False).index,
+            orient="v", ax=axis)
+        axis.axhline(0, color="black", linestyle="--")
+        axis.set_xticklabels(axis.get_xticklabels(), rotation=45, ha="right")
+        sns.despine(fig)
+        fig.savefig(os.path.join(output_dir, "%s.%s.number_differential.split_percentage.pos_neg.svg" % (output_suffix, trait)), bbox_inches="tight")
+
+        # Overlap between sets
+        # # Pyupset
+        # import pyupset as pyu
+        # # Build dict
+        # diff["comparison_direction"] = diff[["comparison", "direction"]].apply(string.join, axis=1)
+        # df_dict = {group: diff[diff["comparison_direction"] == group].reset_index()[['index']] for group in set(diff["comparison_direction"])}
+        # # Plot
+        # plot = pyu.plot(df_dict, unique_keys=['index'], inters_size_bounds=(10, np.inf))
+        # plot['figure'].set_size_inches(20, 8)
+        # plot['figure'].savefig(os.path.join(output_dir, "%s.%s.number_differential.upset.svg" % (output_suffix, trait)), bbox_inched="tight")
+        diff["intersect"] = 1
+        diff["direction"] = diff["log2FoldChange"].apply(lambda x: "up" if x >= 0 else "down")
+        piv = pd.pivot_table(diff.reset_index(), index='gene_name', columns=['comparison', 'direction'], values='intersect', fill_value=0)
+
+        import itertools
+        intersections = pd.DataFrame(columns=["group1", "group2", "dir1", "dir2", "size1", "size2", "intersection", "union"])
+        for ((k1, dir1), i1), ((k2, dir2), i2) in itertools.permutations(piv.T.groupby(level=['comparison', 'direction']).groups.items(), 2):
+            print(k1, k2)
+            i1 = set(piv[i1][piv[i1] == 1].dropna().index)
+            i2 = set(piv[i2][piv[i2] == 1].dropna().index)
+            intersections = intersections.append(
+                pd.Series(
+                    [k1, k2, dir1, dir2, len(i1), len(i2), len(i1.intersection(i2)), len(i1.union(i2))],
+                    index=["group1", "group2", "dir1", "dir2", "size1", "size2", "intersection", "union"]
+                ),
+                ignore_index=True
+            )
+        # convert to %
+        intersections['intersection_perc'] = (intersections['intersection'] / intersections['size2']) * 100.
+
+        # make pivot tables
+        piv_up = pd.pivot_table(intersections[(intersections['dir1'] == "up") & (intersections['dir2'] == "up")], index="group1", columns="group2", values="intersection_perc").fillna(0)
+        piv_down = pd.pivot_table(intersections[(intersections['dir1'] == "down") & (intersections['dir2'] == "down")], index="group1", columns="group2", values="intersection_perc").fillna(0)
+        np.fill_diagonal(piv_up.values, np.nan)
+        np.fill_diagonal(piv_down.values, np.nan)
+
+        # heatmaps
+        fig, axis = plt.subplots(1, 2, figsize=(8 * 2, 8))
+        sns.heatmap(piv_down, square=True, cmap="summer", cbar_kws={"label": "Concordant regions (% of group 2)"}, ax=axis[0])
+        sns.heatmap(piv_up, square=True, cmap="summer", cbar_kws={"label": "Concordant regions (% of group 2)"}, ax=axis[1])
+        axis[0].set_title("Downregulated regions")
+        axis[1].set_title("Upregulated regions")
+        axis[0].set_xticklabels(axis[0].get_xticklabels(), rotation=90, ha="right")
+        axis[1].set_xticklabels(axis[1].get_xticklabels(), rotation=90, ha="right")
+        axis[0].set_yticklabels(axis[0].get_yticklabels(), rotation=0, ha="right")
+        axis[1].set_yticklabels(axis[1].get_yticklabels(), rotation=0, ha="right")
+        fig.savefig(os.path.join(output_dir, "%s.%s.number_differential.overlap.up_down_split.svg" % (output_suffix, trait)), bbox_inches="tight")
+
+        # combined heatmap
+        # with upregulated regions in upper square matrix and downredulated in down square
+        piv_combined = pd.DataFrame(np.triu(piv_up), index=piv_up.index, columns=piv_up.columns).replace(0, np.nan)
+        piv_combined.update(pd.DataFrame(np.tril(piv_down), index=piv_down.index, columns=piv_down.columns).replace(0, np.nan))
+        piv_combined = piv_combined.fillna(0)
+        np.fill_diagonal(piv_combined.values, np.nan)
+
+        fig, axis = plt.subplots(1, figsize=(8, 8))
+        sns.heatmap(piv_combined, square=True, cmap="summer", cbar_kws={"label": "Concordant regions (% of group 2)"}, ax=axis)
+        axis.set_xticklabels(axis.get_xticklabels(), rotation=90, ha="right")
+        axis.set_yticklabels(axis.get_yticklabels(), rotation=0, ha="right")
+        fig.savefig(os.path.join(output_dir, "%s.%s.number_differential.overlap.up_down_together.svg" % (output_suffix, trait)), bbox_inches="tight")
+
+        # Observe disagreement between knockouts
+        # (overlap of down-regulated with up-regulated and vice-versa)
+        piv_up = pd.pivot_table(intersections[(intersections['dir1'] == "up") & (intersections['dir2'] == "down")], index="group1", columns="group2", values="intersection")
+        piv_down = pd.pivot_table(intersections[(intersections['dir1'] == "down") & (intersections['dir2'] == "up")], index="group1", columns="group2", values="intersection")
+
+        piv_disagree = pd.concat([piv_up, piv_down]).groupby(level=0).max()
+
+        fig, axis = plt.subplots(1, 2, figsize=(16, 8))
+        sns.heatmap(piv_disagree, square=True, cmap="Greens", cbar_kws={"label": "Discordant regions"}, ax=axis[0])
+        sns.heatmap(np.log2(1 + piv_disagree), square=True, cmap="Greens", cbar_kws={"label": "Discordant regions (log2)"}, ax=axis[1])
+
+        norm = matplotlib.colors.Normalize(vmin=0, vmax=piv_disagree.max().max())
+        cmap = plt.get_cmap("Greens")
+        log_norm = matplotlib.colors.Normalize(vmin=0, vmax=np.log2(1 + piv_disagree).max().max())
+        for i, g1 in enumerate(piv_disagree.columns):
+            for j, g2 in enumerate(piv_disagree.index):
+                axis[0].scatter(
+                    len(piv_disagree.index) - (j + 0.5), len(piv_disagree.index) - (i + 0.5),
+                    s=(100 ** (norm(piv_disagree.loc[g1, g2]))) - 1, color=cmap(norm(piv_disagree.loc[g1, g2])), marker="o")
+                axis[1].scatter(
+                    len(piv_disagree.index) - (j + 0.5), len(piv_disagree.index) - (i + 0.5),
+                    s=(100 ** (log_norm(np.log2(1 + piv_disagree).loc[g1, g2]))) - 1, color=cmap(log_norm(np.log2(1 + piv_disagree).loc[g1, g2])), marker="o")
+
+        for ax in axis:
+            ax.set_xticklabels(ax.get_xticklabels(), rotation=90, ha="right")
+            ax.set_yticklabels(ax.get_yticklabels(), rotation=0, ha="right")
+        fig.savefig(os.path.join(output_dir, "%s.%s.number_differential.overlap.disagreement.svg" % (output_suffix, trait)), bbox_inches="tight")
+
+        # Pairwise scatter plots
+        cond2 = "after_Ibrutinib"
+        n_rows = n_cols = int(np.ceil(np.sqrt(len(comparisons))))
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(n_cols * 4, n_rows * 4), sharex=True, sharey=True)
+        if n_rows > 1 or n_cols > 1:
+            axes = iter(axes.flatten())
+        else:
+            axes = iter([axes])
+        for cond1 in sorted(groups):
+            if cond1 == cond2:
+                continue
+            # get comparison
+            comparison = comparisons[comparisons.str.contains(cond1)].squeeze()
+            if type(comparison) is pd.Series:
+                if len(comparison) > 1:
+                    comparison = comparison.iloc[0]
+
+            df2 = df[df["comparison"] == comparison]
+            if df2.shape[0] == 0:
+                continue
+            axis = axes.next()
+
+            # Hexbin plot
+            axis.hexbin(np.log2(1 + df2[cond1]), np.log2(1 + df2[cond2]), alpha=1, color="black", edgecolors="white", linewidths=0, bins='log', mincnt=1, rasterized=True)
+            axis.set_xlabel(cond1)
+
+            diff2 = diff[diff["comparison"] == comparison]
+            if diff2.shape[0] > 0:
+                # Scatter plot
+                axis.scatter(np.log2(1 + diff2[cond1]), np.log2(1 + diff2[cond2]), alpha=0.5, color="red", s=2)
+            m = max(np.log2(1 + df2[cond1]).max(), np.log2(1 + df2[cond2]).max())
+            axis.plot([0, m], [0, m], color="black", alpha=0.8, linestyle="--")
+            axis.set_ylabel(cond1)
+            axis.set_ylabel(cond2)
+        sns.despine(fig)
+        fig.savefig(os.path.join(output_dir, "%s.%s.scatter_plots.svg" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
+
+        # Volcano plots
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(n_cols * 4, n_rows * 4), sharex=True, sharey=True)
+        if n_rows > 1 or n_cols > 1:
+            axes = iter(axes.flatten())
+        else:
+            axes = iter([axes])
+        for cond1 in sorted(groups):
+            if cond1 == cond2:
+                continue
+            # get comparison
+            comparison = comparisons[comparisons.str.contains(cond1)].squeeze()
+            if type(comparison) is pd.Series:
+                if len(comparison) > 1:
+                    comparison = comparison.iloc[0]
+
+            df2 = df[df["comparison"] == comparison]
+            if df2.shape[0] == 0:
+                continue
+            axis = axes.next()
+
+            # hexbin
+            axis.hexbin(df2["log2FoldChange"], -np.log10(df2['pvalue']), alpha=1, color="black", edgecolors="white", linewidths=0, bins='log', mincnt=1, rasterized=True)
+
+            diff2 = diff[diff["comparison"] == comparison]
+            if diff2.shape[0] > 0:
+                # significant scatter
+                axis.scatter(diff2["log2FoldChange"], -np.log10(diff2['pvalue']), alpha=0.5, color="red", s=2)
+            axis.axvline(0, linestyle="--", color="black", alpha=0.8)
+            axis.set_title(comparison)
+            axis.set_xlabel("log2(fold change)")
+            axis.set_ylabel("-log10(p-value)")
+        sns.despine(fig)
+        fig.savefig(os.path.join(output_dir, "%s.%s.volcano_plots.svg" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
+
+        # MA plots
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(n_cols * 4, n_rows * 4), sharex=True, sharey=True)
+        if n_rows > 1 or n_cols > 1:
+            axes = iter(axes.flatten())
+        else:
+            axes = iter([axes])
+        for cond1 in sorted(groups):
+            if cond1 == cond2:
+                continue
+            # get comparison
+            comparison = comparisons[comparisons.str.contains(cond1)].squeeze()
+            if type(comparison) is pd.Series:
+                if len(comparison) > 1:
+                    comparison = comparison.iloc[0]
+
+            df2 = df[df["comparison"] == comparison]
+            if df2.shape[0] == 0:
+                continue
+            axis = axes.next()
+
+            # hexbin
+            axis.hexbin(np.log2(df2["baseMean"]), df2["log2FoldChange"], alpha=1, color="black", edgecolors="white", linewidths=0, bins='log', mincnt=1, rasterized=True)
+
+            diff2 = diff[diff["comparison"] == comparison]
+            if diff2.shape[0] > 0:
+                # significant scatter
+                axis.scatter(np.log2(diff2["baseMean"]), diff2["log2FoldChange"], alpha=0.5, color="red", s=2)
+            axis.axhline(0, linestyle="--", color="black", alpha=0.8)
+            axis.set_title(comparison)
+            axis.set_xlabel("Intensity")
+            axis.set_ylabel("log2(fold change)")
+        sns.despine(fig)
+        fig.savefig(os.path.join(output_dir, "%s.%s.ma_plots.svg" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
+
+        # save unique differential regions
+        diff2 = diff[groups].ix[diff.index.unique()].drop_duplicates()
+        diff2.to_csv(os.path.join(output_dir, "%s.%s.differential_regions.csv" % (output_suffix, trait)))
+
+        # Exploration of differential regions
+        # get unique differential regions
+        df2 = diff2.join(self.expression)
+
+        # Characterize regions
+        prefix = "%s.%s.diff_regions" % (output_suffix, trait)
+        # region's structure
+        # characterize_regions_structure(df=df2, prefix=prefix, output_dir=output_dir)
+        # region's function
+        # characterize_regions_function(df=df2, prefix=prefix, output_dir=output_dir)
+
+        # Heatmaps
+        # Comparison level
+        g = sns.clustermap(np.log2(1 + df2[groups]).corr(), xticklabels=False, cbar_kws={"label": "Pearson correlation\non differential genes"}, cmap="Spectral_r", metric="correlation", rasterized=True)
+        g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+        g.fig.savefig(os.path.join(output_dir, "%s.%s.diff_genes.groups.clustermap.corr.svg" % (output_suffix, trait)), bbox_inches="tight", dpi=300, metric="correlation")
+
+        g = sns.clustermap(np.log2(1 + df2[groups]), yticklabels=False, cbar_kws={"label": "Expression of\ndifferential genes"}, cmap="BuGn", metric="correlation", rasterized=True)
+        g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+        g.fig.savefig(os.path.join(output_dir, "%s.%s.diff_genes.groups.clustermap.svg" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
+
+        g = sns.clustermap(np.log2(1 + df2[groups]), yticklabels=False, z_score=0, cbar_kws={"label": "Z-score of expression\non differential genes"}, metric="correlation", rasterized=True)
+        g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+        g.fig.savefig(os.path.join(output_dir, "%s.%s.diff_genes.groups.clustermap.z0.svg" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
+
+        # Fold-changes and P-values
+        # pivot table of genes vs comparisons
+        sig = diff.index.drop_duplicates()
+        fold_changes = pd.pivot_table(df.reset_index(), index="gene_name", columns="comparison", values="log2FoldChange")
+        p_values = -np.log10(pd.pivot_table(df.reset_index(), index="gene_name", columns="comparison", values="padj"))
+
+        # fold
+        if fold_changes.shape[1] > 1:
+            g = sns.clustermap(fold_changes.corr(), xticklabels=False, cbar_kws={"label": "Pearson correlation\non fold-changes"}, cmap="Spectral_r", vmin=0, vmax=1, metric="correlation", rasterized=True)
+            g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+            g.fig.savefig(os.path.join(output_dir, "%s.%s.diff_genes.groups.fold_changes.clustermap.corr.svg" % (output_suffix, trait)), bbox_inches="tight", dpi=300, metric="correlation")
+
+            g = sns.clustermap(fold_changes.ix[sig], yticklabels=False, cbar_kws={"label": "Fold-changes of\ndifferential genes"}, vmin=-4, vmax=4, metric="correlation", rasterized=True)
+            g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+            g.fig.savefig(os.path.join(output_dir, "%s.%s.diff_genes.groups.fold_changes.clustermap.svg" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
+
+        # Sample level
+        g = sns.clustermap(df2[[s.name for s in sel_samples]].corr(), xticklabels=False, cbar_kws={"label": "Pearson correlation\non differential genes"}, cmap="Spectral_r", metric="correlation", rasterized=True)
+        g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+        g.fig.savefig(os.path.join(output_dir, "%s.%s.diff_genes.samples.clustermap.corr.svg" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
+
+        g = sns.clustermap(df2[[s.name for s in sel_samples]], yticklabels=False, cbar_kws={"label": "Expression of\ndifferential genes"}, cmap="BuGn", vmin=0, metric="correlation", rasterized=True)
+        g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+        g.fig.savefig(os.path.join(output_dir, "%s.%s.diff_genes.samples.clustermap.svg" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
+
+        g = sns.clustermap(df2[[s.name for s in sel_samples]], yticklabels=False, z_score=0, cbar_kws={"label": "Z-score of expression\non differential genes"}, metric="correlation", rasterized=True)
+        g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+        g.fig.savefig(os.path.join(output_dir, "%s.%s.diff_genes.samples.clustermap.z0.svg" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
+
+        # Get enrichments for the top genes in each side
+        diff = df.loc[df.sort_values(["log2FoldChange"]).head(200).index.tolist() + df.sort_values(["log2FoldChange"]).tail(200).index.tolist(), :]
+
+        max_diff = 1000
+        pathway_enr = pd.DataFrame()
+        for cond1 in sorted(groups):
+            # get comparison
+            comparison = comparisons[comparisons.str.contains(cond1)].squeeze()
+
+            if type(comparison) is pd.Series:
+                if len(comparison) > 1:
+                    comparison = comparison.iloc[0]
+
+            # Separate in up/down-regulated genes
+            for f, direction, top in [(np.less, "down", "head"), (np.greater, "up", "tail")]:
+                comparison_df = self.expression.ix[diff[
+                    (diff["comparison"] == comparison) &
+                    (f(diff["log2FoldChange"], 0))
+                ].index]
+
+                # Handle extremes of regions
+                if comparison_df.shape[0] < 1:
+                    continue
+
+                if comparison_df.shape[0] > max_diff:
+                    comparison_df = comparison_df.ix[
+                        getattr(
+                            diff[
+                                (diff["comparison"] == comparison) &
+                                (f(diff["log2FoldChange"], 0))]
+                            ["log2FoldChange"].sort_values(), top)
+                        (max_diff).index]
+
+                # Characterize regions
+                prefix = "%s.%s.diff_regions.comparison_%s.%s" % (output_suffix, trait, comparison, direction)
+
+                comparison_dir = os.path.join(output_dir, prefix)
+                if not os.path.exists(comparison_dir):
+                    os.makedirs(comparison_dir)
+
+                print("Doing regions of comparison %s, with prefix %s" % (comparison, prefix))
+                if not os.path.exists(os.path.join(comparison_dir, "enraichr.csv")):
+                    comparison_df.reset_index()[['gene_name']].drop_duplicates().to_csv(os.path.join(comparison_dir, "genes.txt"), index=False)
+                    enr = enrichr(comparison_df.reset_index())
+                    enr.to_csv(os.path.join(comparison_dir, "enrichr.csv"), index=False, encoding="utf8")
+
+                enr = pd.read_csv(os.path.join(comparison_dir, "enrichr.csv"))
+                enr["comparison"] = prefix
+                pathway_enr = pathway_enr.append(enr, ignore_index=True)
+
+        # write combined enrichments
+        pathway_enr.to_csv(
+            os.path.join(output_dir, "%s.%s.diff_genes.enrichr.csv" % (output_suffix, trait)), index=False, encoding="utf8")
+
+    def investigate_differential_genes(
+            self, samples, trait="timepoint_name",
+            variables=["atac_seq_batch", "timepoint_name"],
+            output_suffix="ibrutinib_treatment_expression", n=25, method="groups"):
+        output_dir = os.path.join(self.results_dir, output_suffix)
+
+        # ENRICHR
+        # read in
+        pathway_enr = pd.read_csv(os.path.join(output_dir, "%s.%s.diff_genes.enrichr.csv" % (output_suffix, trait)))
+
+        # pretty names
+        # pathway_enr["comparison"] = map(lambda x: x[-1], pathway_enr["comparison"].str.split("."))
+        pathway_enr["description"] = pathway_enr["description"].str.decode("utf-8")
+
+        for comparison in pathway_enr["comparison"].unique():
+            for gene_set_library in pathway_enr["gene_set_library"].unique():
+                print(gene_set_library)
+                if gene_set_library == "Epigenomics_Roadmap_HM_ChIP-seq":
+                    continue
+
+                comparison_dir = os.path.join(output_dir, comparison)
+
+                d = pathway_enr[
+                    (pathway_enr["comparison"] == comparison) &
+                    (pathway_enr["gene_set_library"] == gene_set_library)]
+
+                # if d.shape[0] == 0:
+                #     continue
+
+                # transform p-values
+                d["p_value"] = (-np.log10(d['p_value'])).replace({np.inf: 300})
+
+                # show a maximum of N terms
+                d = d.sort_values("combined_score", ascending=False).head(n)
+
+                # plot top N terms
+                fig, axis = plt.subplots(1)
+                sns.barplot(d['combined_score'], d['description'], orient="horizontal", color=sns.color_palette("colorblind")[0])
+                axis.set_xlabel("Combined score")
+                sns.despine(fig)
+                fig.savefig(os.path.join(comparison_dir, "enrichr.%s.cluster_specific.top.comb_score.svg" % gene_set_library), bbox_inches="tight", dpi=300)
+
+                d = d.sort_values("p_value", ascending=False)
+                fig, axis = plt.subplots(1)
+                sns.barplot(d['p_value'], d['description'], orient="horizontal", color=sns.color_palette("colorblind")[0])
+                axis.set_xlabel("-log10(p-value)")
+                sns.despine(fig)
+                fig.savefig(os.path.join(comparison_dir, "enrichr.%s.cluster_specific.top.p_value.svg" % gene_set_library), bbox_inches="tight", dpi=300)
+
+
 def add_args(parser):
     """
     Options for project and pipelines.
@@ -4584,7 +5384,7 @@ def main():
 
     # Start project
     prj = Project("metadata/project_config.yaml")
-    prj.add_sample_sheet()
+
     for sample in prj.samples:
         sample.subproject = analysis.name
 
@@ -4652,7 +5452,7 @@ def main():
 
     # Start project
     prj = Project("metadata/project_config.yaml")
-    prj.add_sample_sheet()
+
     for sample in prj.samples:
         sample.subproject = analysis.name
 
@@ -4724,13 +5524,14 @@ def main():
     analysis.to_pickle()
 
     # Unsupervised analysis
+    sample_attributes = [
+        "patient_id", "timepoint_name", "patient_gender", "patient_age_at_collection",
+        "ighv_mutation_status", "CD38_cells_percentage", "leuko_count (10^3/uL)", "% lymphocytes", "purity (CD5+/CD19+)", "%CD19/CD38", "% CD3", "% CD14", "% B cells", "% T cells",
+        "del11q", "del13q", "del17p", "tri12", "p53",
+        "time_since_treatment", "treatment_response"]
     analysis.unsupervised(
         analysis.samples,
-        attributes=[
-            "patient_id", "timepoint_name", "patient_gender", "patient_age_at_collection",
-            "ighv_mutation_status", "CD38_cells_percentage", "leuko_count (10^3/uL)", "% lymphocytes", "purity (CD5+/CD19+)", "%CD19/CD38", "% CD3", "% CD14", "% B cells", "% T cells",
-            "del11q", "del13q", "del17p", "tri12", "p53",
-            "time_since_treatment", "treatment_response"])
+        attributes=sample_attributes)
 
     # Supervised analysis
     # Differential analysis and exploration of differential regions
@@ -4775,6 +5576,35 @@ def main():
     pharmacoscopy(analysis)
     atac_to_pathway(analysis)
     make_network(analysis)
+
+    # RNA-seq
+    prj = Project("metadata/project_config.yaml")
+    prj.samples = [s for s in prj.samples if s.library == "RNA-seq"]
+    rna = RNASeqAnalysis(name="cll-ibrutinib_AKH-RNA", prj=prj, samples=prj.samples)
+
+    # get expression and check quality
+    rna.get_gene_expression(attributes=sample_attributes)
+    rna.expression_matrix_counts = pd.read_csv(os.path.join(rna.results_dir, rna.name + ".expression_counts.gene_level.csv"), index_col=0)
+    rna.expression_matrix_qnorm = pd.read_csv(os.path.join(rna.results_dir, rna.name + ".expression_counts.gene_level.quantile_normalized.csv"), index_col=0)
+    rna.expression = pd.read_csv(os.path.join(rna.results_dir, rna.name + ".expression_counts.gene_level.quantile_normalized.log2_tpm.csv"), index_col=0)
+    rna.expression_annotated = pd.read_csv(os.path.join(rna.results_dir, rna.name + ".expression_counts.gene_level.quantile_normalized.log2_tpm.annotated_metadata.csv"), index_col=0, header=range(len(sample_attributes)))
+
+    rna.plot_expression_characteristics()
+
+    # unsupervised analysis
+    attrs = [
+        "patient_id", "timepoint_name", "patient_gender", "patient_age_at_collection",
+        "ighv_mutation_status",
+        "del11q", "del13q", "del17p", "tri12", "p53",
+        "time_since_treatment", "treatment_response"]
+    rna.unsupervised(quant_matrix="expression_annotated", attributes_to_plot=attrs, plot_prefix="all_genes")
+
+    # supervised
+    rna.differential_expression_analysis(
+        rna.samples,
+        trait="timepoint_name",
+        variables=["atac_seq_batch", "timepoint_name"],
+        output_suffix="ibrutinib_treatment_expression")
 
 
 if __name__ == '__main__':
