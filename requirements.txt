@@ -1,0 +1,15 @@
+-e git://github.com/epigen/looper.git#egg=looper
+-e git://github.com/epigen/pypiper.git#egg=pypiper
+argparse
+matplotlib
+seaborn
+multiprocessing
+pybedtools
+parmap
+pysam
+pandas>=0.16
+numpy
+scikit-learn==0.17
+scipy
+statsmodels
+rpy2
