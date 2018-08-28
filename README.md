@@ -24,12 +24,8 @@ If you wish to reproduce the processing of the raw data, download the data [from
 <!-- 4. Get external files (genome annotations mostly): `make external_files` or use the files in the [paper website](http://cll-chromatin.computational-epigenetics.org) (`external` folder). -->
 5. Run the analysis: `make analysis` or `python src/analysis.py`
 
-<<<<<<< HEAD
 Additionaly, processed (bigWig and narrowPeak files together with a chromatin accessibility matrix) are available from [GEO with accession number GSE100672](http://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE100672).
 
 If you wish to reproduce the plots from the analysis you can, in principle:
 
 1. run `python src/analysis.py`
-=======
-Additionaly, processed files are available from [GEO with accession number GSE100672](http://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE100672) and the [supplementary website](http://cll-synergies.computational-epigenetics.org).
->>>>>>> 4bc9e002581270d8686bd09b8ee15521a2e3f263
