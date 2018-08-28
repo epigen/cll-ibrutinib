@@ -917,9 +917,11 @@ class Analysis(object):
         X = self.accessibility[[s.name for s in samples if s.name not in exclude]]
 
         # Pairwise correlations
+        c = X.corr()
+        c.index = c.columns = c.index.get_level_values("sample_name")
         g = sns.clustermap(
-            X.corr(), xticklabels=False, yticklabels=sample_display_names, annot=True,
-            cmap="Spectral_r", figsize=(15, 15), cbar_kws={"label": "Pearson correlation"}, row_colors=color_dataframe.values.tolist())
+            c, xticklabels=False, yticklabels=sample_display_names, annot=True,
+            cmap="Spectral_r", figsize=(15, 15), cbar_kws={"label": "Pearson correlation"}, col_colors=color_dataframe.T)
         for item in g.ax_heatmap.get_yticklabels():
             item.set_rotation(0)
         g.ax_heatmap.set_xlabel(None)
@@ -963,6 +965,11 @@ class Analysis(object):
         x = pd.DataFrame(x_new, index=X.columns, columns=["PC{}".format(i) for i in range(1, 1 + x_new.shape[1])])
         xx = x.apply(lambda j: (j - j.mean()) / j.std(), axis=0)
 
+        xx2 = xx.copy()
+        xx2['ighv_mutation_status'] = xx2.index.get_level_values("ighv_mutation_status")
+        xx2.index = xx2.index.get_level_values("sample_name")
+        xx2.loc[:, ["ighv_mutation_status", "PC1", "PC2"]].to_csv(os.path.join("source_data", "fig2b.csv"))
+
         # plot % explained variance per PC
         fig, axis = plt.subplots(1)
         axis.plot(
@@ -1005,8 +1012,12 @@ class Analysis(object):
         xx = x.apply(lambda j: (j - j.mean()) / j.std(), axis=0)
         xx = xx[xx.index.get_level_values("patient_id") != "CLL16"]
 
-        order = xx.groupby(level=['patient_id']).apply(lambda x: min(x.loc[x.index.get_level_values("timepoint_name") == "after_Ibrutinib", "PC3"].squeeze(), x.loc[x.index.get_level_values("timepoint_name") == "before_Ibrutinib", "PC3"].squeeze()))
-        order = order[[type(i) is np.float64 for i in order]].sort_values()
+        xx2 = xx.copy()
+        xx2.index = xx2.index.get_level_values("sample_name")
+        xx2.iloc[:, [2]].to_csv(os.path.join("source_data", "fig2c.csv"))
+
+        order = xx.groupby(level=['patient_id']).apply(lambda x: min(x.loc[x.index.get_level_values("timepoint_name") == "after_Ibrutinib", "PC3"].squeeze(), x.loc[x.index.get_level_values("timepoint_name") == "before_Ibrutinib", "PC3"].squeeze())).sort_values()
+        # order = order[[type(i) is np.float64 for i in order]].sort_values()
         order.name = "patient_change"
         order = order.to_frame()
         order['patient_change_order'] = order['patient_change'].rank()
@@ -1486,6 +1497,11 @@ class Analysis(object):
         sns.despine(fig)
         fig.savefig(os.path.join(output_dir, "%s.%s.scatter_plots.svg" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
 
+        sd = pd.DataFrame([np.log2(1 + df2[cond1]), np.log2(1 + df2[cond2])]).T
+        sd['differential'] = sd.index.isin(diff2.index.tolist())
+        sd.index.name = "region"
+        sd.to_csv(os.path.join("source_data", "fig2d.csv"), index=True)
+
         # Volcano plots
         fig, axes = plt.subplots(n_rows, n_cols, figsize=(n_cols * 4, n_rows * 4), sharex=True, sharey=True)
         if n_rows > 1 or n_cols > 1:
@@ -1618,6 +1634,12 @@ class Analysis(object):
         g.ax_heatmap.set_ylabel(g.ax_heatmap.get_ylabel(), visible=False)
         g.fig.savefig(os.path.join(output_dir, "%s.%s.diff_regions.samples.clustermap.z0.svg" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
 
+        a = self.accessibility.ix[diff2.index][[s.name for s in sel_samples]].T
+        a.index = a.index.get_level_values("sample_name")
+        import scipy
+        az = a.apply(scipy.stats.zscore)
+        az.to_csv(os.path.join("source_data", "fig2e.csv"), index=True)
+
         # Examine each region cluster
         region_enr = pd.DataFrame()
         lola_enr = pd.DataFrame()
@@ -1694,6 +1716,7 @@ class Analysis(object):
             change_df.apply(lambda x: pd.Series(x['gene_name'].split(","), name="gene_name"), axis=1).stack().reset_index(level=1, drop=True).reset_index()
         )
         g = g.groupby([0])['log2FoldChange'].apply(lambda x: x.min() if x.mean() < 0 else x.max()).sort_values()
+        g.to_csv(os.path.join(output_dir, "%s.%s.diff_regions.gene_level.fold_change.csv" % (output_suffix, trait)))
 
         m = max(abs(g.min()), abs(g.max()))
         normalizer = matplotlib.colors.Normalize(vmin=-m, vmax=m)
@@ -1705,6 +1728,7 @@ class Analysis(object):
         ).squeeze()
         pathway_genes3 = pathway_genes2[pathway_genes2.index.str.contains("NF-k|B cell|foxo", case=False)]
         g2 = g[g.index.isin(pathway_genes3.tolist())]
+        g2.to_csv(os.path.join(output_dir, "%s.%s.diff_regions.gene_level.in_pathways.fold_change.csv" % (output_suffix, trait)))
 
         fig, axis = plt.subplots(1, figsize=(4, 4))
         axis.scatter(g2.rank(), g2, color=plt.get_cmap("coolwarm")(normalizer(g2)))
@@ -1748,6 +1772,9 @@ class Analysis(object):
         # unique ids for lola sets
         cols = ['description', u'cellType', u'tissue', u'antibody', u'treatment', u'dataSource', u'filename']
         lola['label'] = lola[cols].astype(str).apply(string.join, axis=1)
+
+        sd = lola[lola['comparison'].str.contains("down")].sort_values('pValueLog', ascending=False).head(13)
+        sd[['label', 'pValueLog']].to_csv(os.path.join("source_data", "fig2f.csv"), index=False)
 
         # pivot table
         lola_pivot = pd.pivot_table(lola, values="pValueLog", columns="label", index="comparison")
@@ -1837,9 +1864,16 @@ class Analysis(object):
 
         # ENRICHR
         # read in
-        enrichr = pd.read_csv(os.path.join(output_dir, "%s.%s.diff_regions.enrichr.csv" % (output_suffix, trait)))
+        enrichr = pd.read_csv(os.path.join(output_dir, "%s.%s.diff_regions.enrichr.scores.csv" % (output_suffix, trait)))
         # pretty names
         enrichr["comparison"] = enrichr["comparison"].str.extract("%s.%s.diff_regions.comparison_(.*)" % (output_suffix, trait), expand=True)
+
+        a = enrichr[enrichr['gene_set_library'].str.contains("NCI-Nature_2016") & enrichr['comparison'].str.contains("down")].sort_values("combined_score", ascending=False).head()
+        b = enrichr[enrichr['gene_set_library'].str.contains("KEGG_2016") & enrichr['comparison'].str.contains("down")].sort_values("combined_score", ascending=False).head()
+        a['gene_set_library'] = "NCI-Nature_2016"
+        b['gene_set_library'] = "KEGG_2016"
+        sd = a.append(b)
+        sd[['gene_set_library', 'description', 'combined_score']].to_csv(os.path.join("source_data", "fig2h.csv"), index=False)
 
         for gene_set_library in enrichr["gene_set_library"].unique():
             print(gene_set_library)
@@ -1891,9 +1925,9 @@ class Analysis(object):
                 "sample_name", "cell_type", "patient_id", "clinical_centre", "timepoint_name", "patient_gender", "patient_age_at_collection",
                 "ighv_mutation_status", "CD38_cells_percentage", "leuko_count (10^3/uL)", "% lymphocytes", "purity (CD5+/CD19+)", "%CD19/CD38", "% CD3", "% CD14", "% B cells", "% T cells",
                 "del11q", "del13q", "del17p", "tri12", "p53",
-                "time_since_treatment", "treatment_response"]):
+                "time_since_treatment", "treatment_response",
+                "del11q_threshold", "del13q_threshold", "del17p_threshold", "tri12_threshold"]):
         """
-        Discover differential regions for a condition with only one replicate.
         """
         def z_score(x):
             return (x - x.mean()) / x.std()
@@ -1903,7 +1937,7 @@ class Analysis(object):
 
         index = self.accessibility.columns[self.accessibility.columns.get_level_values("sample_name").isin([s.name for s in samples])]
 
-        color_dataframe = pd.DataFrame(self.get_level_colors(index=index, levels=attributes), index=attributes, columns=[s.name for s in samples])
+        color_dataframe = pd.DataFrame(get_level_colors(self, index=index, levels=attributes), index=attributes, columns=[s.name for s in samples])
         sample_display_names = color_dataframe.columns.str.replace("_ATAC-seq", "").str.replace("_hg19", "")
 
         # exclude attributes if needed
@@ -2035,8 +2069,18 @@ class Analysis(object):
         from scipy.stats import pearsonr
         associations = list()
 
+        numerical_variables = [
+            "patient_age_at_collection", "CD38_cells_percentage", "leuko_count (10^3/uL)",
+            "% lymphocytes", "%CD19/CD38", "% CD3", "% CD14", "% B cells", "% T cells",
+            "del11q", "del13q", "del17p", "tri12",
+            "time_since_treatment"
+        ]
+        for var in numerical_variables:
+            for s in samples:
+                setattr(s, var, float(getattr(s, var)))
+
         for measurement in ["score", "combined_score"]:
-            for attr in attributes[5:]:
+            for attr in attributes[3:]:
                 print("Attribute {}.".format(attr))
                 sel_samples = [s for s in samples if hasattr(s, attr)]
                 sel_samples = [s for s in sel_samples if not pd.isnull(getattr(s, attr))]
@@ -2051,7 +2095,8 @@ class Analysis(object):
                     variable_type = "numerical"
                 else:
                     print("attr %s cannot be tested." % attr)
-                    associations.append([measurement, attr, variable_type, np.nan, np.nan, np.nan, np.nan])
+                    associations.append([
+                        measurement, attr, variable_type, np.nan, np.nan, np.nan, np.nan, np.nan, np.nan])
                     continue
 
                 if variable_type == "categorical":
@@ -2064,17 +2109,19 @@ class Analysis(object):
                         st, p = kruskal(g1_values, g2_values)
 
                         # Append
-                        associations.append([measurement, attr, variable_type, group1, group2, p, st])
+                        associations.append([measurement, attr, variable_type, group1, group2, g1_values.shape[0], g2_values.shape[0], p, st])
 
                 elif variable_type == "numerical":
                     # It numerical, calculate pearson correlation
                     trait_values = [getattr(s, attr) for s in sel_samples]
                     st, p = pearsonr(scores[measurement].ix[[s.name for s in sel_samples]], trait_values)
 
-                    associations.append([measurement, attr, variable_type, np.nan, np.nan, p, st])
+                    associations.append([measurement, attr, variable_type, np.nan, np.nan, np.nan, np.nan, p, st])
 
-        associations = pd.DataFrame(associations, columns=["score", "attribute", "variable_type", "group_1", "group_2", "p_value", "stat"])
-
+        associations = pd.DataFrame(
+            associations,
+            columns=["score", "attribute", "variable_type", "group_1", "group_2", "group_1_n", "group_2_n", "p_value", "stat"])
+        associations = associations[(associations['group_1'] != 'nan') & (associations['group_2'] != 'nan')]
         # write
         associations.to_csv(os.path.join(self.results_dir, "{}.{}.diff_regions.intensity_score_combined.associations.csv".format(output_suffix, trait)), index=False)
 
@@ -2094,6 +2141,41 @@ class Analysis(object):
         g.fig.savefig(os.path.join(self.results_dir, "{}.{}.diff_regions.intensity_score_combined.associations.masked.svg".format(output_suffix, trait)), bbox_inches="tight")
 
         #
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        from statsmodels.sandbox.stats.multicomp import multipletests
+        results_dir = "results"
+        output_suffix = "cll-ibrutinib_AKH.ibrutinib_treatment"
+        trait = "timepoint_name"
+
+        # associations = pd.read_csv(os.path.join(results_dir, "{}.{}.diff_regions.intensity_score_combined.associations.csv".format(output_suffix, trait)))
+        associations = associations[(associations['group_1'] != 'nan') & (associations['group_2'] != 'nan')]
+        associations["q_value"] = multipletests(associations["p_value"])[1]
+
+        associations = associations.sort_values("p_value")
+
+        p = associations[associations['score'] == 'score']
+        fig, axis = plt.subplots(1, 3, sharey=True)
+        sns.barplot(-np.log10(p["p_value"]), p["attribute"], orient="horizont", color="blue", ax=axis[0])
+        sns.barplot(-np.log10(p["q_value"]), p["attribute"], orient="horizont", color="blue", ax=axis[1])
+        sns.barplot(p["stat"], p["attribute"], orient="horizont", color="blue", ax=axis[2])
+        axis[2].set_xlim(-6, 6)
+        axis[0].axvline(1.3, linestyle="--", zorder=0)
+        axis[1].axvline(1.3, linestyle="--", zorder=0)
+        axis[2].axvline(0, linestyle="--", zorder=0)
+        fig.savefig(os.path.join(results_dir, "{}.{}.diff_regions.intensity_score.associations.q_value_stat.svg".format(output_suffix, trait)), bbox_inches="tight")
+
+        p = associations[associations['score'] == 'combined_score']
+        fig, axis = plt.subplots(1, 3, sharey=True)
+        sns.barplot(-np.log10(p["p_value"]), p["attribute"], orient="horizont", color="blue", ax=axis[0])
+        sns.barplot(-np.log10(p["q_value"]), p["attribute"], orient="horizont", color="blue", ax=axis[1])
+        sns.barplot(p["stat"], p["attribute"], orient="horizont", color="blue", ax=axis[2])
+        axis[2].set_xlim(-6, 6)
+        axis[0].axvline(1.3, linestyle="--", zorder=0)
+        axis[1].axvline(1.3, linestyle="--", zorder=0)
+        axis[2].axvline(0, linestyle="--", zorder=0)
+        fig.savefig(os.path.join(results_dir, "{}.{}.diff_regions.intensity_score_combined.associations.q_value_stat.svg".format(output_suffix, trait)), bbox_inches="tight")
+
 
     def interaction_differential_analysis(
             self, samples, formula="~patient_id * timepoint_name",
@@ -2560,24 +2642,25 @@ class Analysis(object):
 def annotate_drugs(analysis, sensitivity):
     """
     """
+    from bioservices.chembl import ChEMBL
     from bioservices.kegg import KEGG
     from collections import defaultdict
     import string
     from mpl_toolkits.axes_grid1.inset_locator import zoomed_inset_axes
 
-    output_dir = os.path.join(analysis.results_dir, "pharmacoscopy")
+    output_dir = os.path.join("results", "pharmacoscopy")
 
     sensitivity = pd.read_csv(os.path.join("metadata", "pharmacoscopy_score_v3.csv"))
     rename = {
-        "ABT-199 = Venetoclax": "ABT-199",
-        "ABT-263 = Navitoclax": "ABT-263",
-        "ABT-869 = Linifanib": "ABT-869",
-        "AC220 = Quizartinib": "AC220",
-        "Buparlisib (BKM120)": "BKM120",
+        "ABT-199 = Venetoclax": "Venetoclax",
+        "ABT-263 = Navitoclax": "Navitoclax",
+        "ABT-869 = Linifanib": "Linifanib",
+        "AC220 = Quizartinib": "Quizartinib",
+        "Buparlisib (BKM120)": "Buparlisib",
         "EGCG = Epigallocatechin gallate": "Epigallocatechin gallate",
-        "JQ1": "(+)-JQ1",
-        "MLN-518 = Tandutinib": "MLN-518",
-        "Selinexor (KPT-330)": "KPT-330"}
+        "JQ1": "JQ1",
+        "MLN-518 = Tandutinib": "Tandutinib",
+        "Selinexor (KPT-330)": "Selinexor"}
     sensitivity["proper_name"] = sensitivity["drug"]
     for p, n in rename.items():
         sensitivity["proper_name"] = sensitivity["proper_name"].replace(p, n)
@@ -2589,15 +2672,195 @@ def annotate_drugs(analysis, sensitivity):
     annot = pd.merge(sensitivity[['drug', 'proper_name', 'name_lower']].drop_duplicates(), cloud, on="name_lower", how="left")
 
     # DGIdb: drug -> genes
-    interact = pd.read_csv("http://dgidb.genome.wustl.edu/downloads/interactions.tsv", sep="\t")
-    interact.loc[:, "name_lower"] = interact["drug_primary_name"].str.lower()
-    cats = pd.read_csv("http://dgidb.genome.wustl.edu/downloads/categories.tsv", sep="\t")
-    dgidb = pd.merge(interact, cats, how="left")
-    dgidb.to_csv(os.path.join(output_dir, "dgidb.interactions_categories.csv"), index=False)
+    interact = pd.read_csv("http://dgidb.org/data/interactions.tsv", sep="\t")
+    interact.loc[:, "name_lower"] = interact["drug_claim_primary_name"].str.lower()
+    cats = pd.read_csv("http://dgidb.org/data/categories.tsv", sep="\t")
+    dgidb = pd.merge(interact, cats, how="left", left_on="gene_name", right_on="entrez_gene_symbol")
+    drugs = pd.read_table("http://www.dgidb.org/data/drugs.tsv", sep="\t")
+    dgidb = pd.merge(dgidb, cats, how="left")
+    dgidb.to_csv(os.path.join(output_dir, "dgidb.interactions_categories_drugs.20180809.csv"), index=False)
     # tight match
     annot = pd.merge(annot, dgidb, on="name_lower", how="left")
-    annot.to_csv(os.path.join("metadata", "drugs_annotated.csv"), index=False)
-    annot = pd.read_csv(os.path.join("metadata", "drugs_annotated.csv"))
+    annot.to_csv(os.path.join("metadata", "drugs_annotated.20180809.csv"), index=False)
+    annot = pd.read_csv(os.path.join("metadata", "drugs_annotated.20180809.csv"))
+
+    # CHEMBL: drug -> mode of action
+    import requests
+    base_url = "https://www.ebi.ac.uk/chembl/api/data/molecule/{}?format=json"
+
+    chembl = list()
+    for drug in annot['drug_chembl_id'].dropna().unique():
+        print(drug)
+        response = requests.get(base_url.format(drug))
+        if not response.ok:
+            print(Exception('Error fetching ChEMBL entry:"{}"'.format(drug)))
+        # Get enriched sets in gene set
+        chembl.append(json.loads(response.text))
+    chembl = pd.DataFrame(chembl, index=annot['drug_chembl_id'].dropna().unique())
+    chembl.to_csv(os.path.join("metadata", "chembl.20180809.csv"), index=True)
+
+    # Get ATC term
+    from bs4 import BeautifulSoup
+    base_url = "https://www.whocc.no/atc_ddd_index/?code={}"
+
+    atcs = chembl['atc_classifications'].apply(pd.Series).stack().reset_index().drop("level_1", axis=1)
+    atcs.columns = ['CHEMBL_id', "ATC_id"]
+
+    atc_codes = pd.DataFrame()
+    for atc in atcs['ATC_id'].dropna().drop_duplicates():
+        print(atc)
+        response = requests.get(base_url.format(atc))
+        soup = BeautifulSoup(response.content, "html.parser")
+        tags = list()
+        for tag in soup.findAll("div", id="content")[0].findAll("a")[2:-1]:
+            tags += [tag.string.replace(r".*code=", "").replace(r"\">.*", "")]
+        atc_codes = atc_codes.append(pd.DataFrame([tags, [atc] * len(tags)]).T)
+    atc_codes.columns = ['ATC_term', 'ATC_id']
+    atc_codes.to_csv(os.path.join("metadata", "atc.20180809.csv"), index=False)
+
+    annot2 = pd.merge(annot, pd.merge(atcs, atc_codes), left_on="drug_chembl_id", right_on="CHEMBL_id")
+
+    annot2.to_csv(os.path.join("metadata", "drugs_annotated.with_ATC.20180809.csv"), index=False)
+    annot3 = (annot2[['drug', 'ATC_id', 'ATC_term']]
+        .drop_duplicates()
+        .groupby('drug')['ATC_term']
+        .apply(np.unique)
+        .apply(pd.Series).stack()
+        .reset_index(level=1, drop=True))
+    annot4 = annot3.loc[(annot3.str.lower() != annot3.index.str.lower())]
+    annot4.to_csv(os.path.join("metadata", "drugs_annotated.with_ATC.20180809.slim.csv"), index=True)
+
+    # Get PubChem IDs
+    base_url = "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{}/JSON"
+    pubchem = list()
+    for drug in annot['drug_chembl_id'].dropna().unique():
+        print(drug)
+        response = requests.get(base_url.format(drug))
+        if not response.ok:
+            print(Exception('Error fetching ChEMBL entry:"{}"'.format(drug)))
+        # Get enriched sets in gene set
+        try:
+            pubchem.append(json.loads(response.text)['PC_Compounds'][0]['id']['id']['cid'])
+        except:
+            print(Exception('Not found: ChEMBL entry:"{}"'.format(drug)))
+            pubchem.append(np.nan)
+    pubchem_ids = pd.Series(pubchem, index=annot['drug_chembl_id'].dropna().unique())
+
+    # Get PubChem entries
+    "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{}/property/MolecularFormula,MolecularWeight,InChIKey/JSON"
+    base_url = "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{}/JSON"
+    pubchem = list()
+    for id_ in pubchem_ids.dropna().unique():
+        print(id_)
+        response = requests.get(base_url.format(id_))
+        if not response.ok:
+            print(Exception('Error fetching ChEMBL entry:"{}"'.format(id_)))
+        # Get enriched sets in gene set
+        try:
+            pubchem.append(json.loads(response.text)['PC_Compounds'][0]['id']['id']['cid'])
+        except:
+            print(Exception('Not found: ChEMBL entry:"{}"'.format(id_)))
+            pubchem.append(np.nan)
+    pubchem = pd.DataFrame(pubchem, index=annot['drug_chembl_id'].dropna().unique())
+    pubchem.to_csv(os.path.join("metadata", "pubchem.20180809.csv"), index=True)
+
+
+    # CHEMBL -> CHEBI -> KEGG
+    k = KEGG()
+    chebi_kegg = pd.Series(k.conv("compound", "chebi"))
+    chebi_kegg.index.name = "chebi"
+    chebi_kegg.name = "kegg"
+    uni = UniChem()
+    chembl_chebi = pd.Series(uni.get_mapping("chebi", "chembl"))
+    chembl_chebi.index = "chebi:" + chembl_chebi.index.astype(str)
+    chembl_chebi.index.name = "chebi"
+    chembl_chebi.name = "chembl"
+    chembl_kegg = pd.Series(uni.get_mapping("chembl", "kegg_ligand"))
+    chembl_kegg.index.name = "chembl"
+    chembl_kegg.name = "kegg_ligand"
+
+    ids = chembl_chebi.to_frame().join(chebi_kegg.to_frame()).reset_index()
+    ids.to_csv(os.path.join("metadata", "ids.chembl_chebi_kegg.20180809.csv"), index=False)
+
+    annot3 = pd.merge(annot2, ids, left_on="drug_chembl_id", right_on="chembl")
+    annot3.to_csv(os.path.join("metadata", "drugs_annotated.with_ATC_chembl_chebi_kegg.20180809.csv"), index=False)
+
+    # ChEBI ontology
+    ch = ChEBI()
+    ontology = pd.DataFrame()
+    for id_ in annot3['chebi'].drop_duplicates().dropna().sort_values():
+        print(id_)
+        ont = ch.getCompleteEntity(id_.upper())
+
+        terms = [x.chebiName for x in ont['OntologyParents']]
+        ontology = ontology.append(pd.DataFrame([terms, [id_] * len(terms)]).T)
+    ontology.columns = ['ontology_term', 'chebi']
+    ontology.to_csv(os.path.join("metadata", "chebi_ontology.20180809.csv"), index=False)
+
+    annot4 = pd.merge(annot3, ontology, on="chebi")
+    annot4.to_csv(os.path.join("metadata", "drugs_annotated.with_ATC_chembl_chebi_kegg_ontology.20180809.csv"), index=False)
+
+    annot4[['drug', 'ontology_term']].drop_duplicates().to_csv(os.path.join("metadata", "drugs_annotated.with_ATC_chembl_chebi_kegg_ontology.20180809.slim.csv"), index=False)
+
+
+
+    # KEGG target-based annotation of drugs
+    kegg = list()
+    for name in annot4['proper_name'].dropna().unique():
+        print(name)
+        o = k.find("drug", name)
+        if o == u'\n':
+            o = k.find("compound", name)
+        if o == u'\n':
+            kegg.append(np.nan)
+        else:
+            kegg.append(o.split('\t')[0].strip())
+    kegg = pd.Series(kegg, index=annot4['proper_name'].dropna().unique())
+    kegg.name = "kegg_drug"
+    kegg.index.name = "proper_name"
+
+    annot5 = pd.merge(annot4, kegg.reset_index()).rename(columns={"kegg": "kegg_compound"})
+    annot5.to_csv(os.path.join("metadata", "drugs_annotated.with_ATC_chembl_chebi_kegg_ontology_keggdrug.20180809.csv"), index=False)
+
+    # Add KEGG efficacy and BRITE entries
+    efficacy = list()
+    brite = list()
+    for entry in annot5['kegg_drug'].dropna().unique():
+        print(entry)
+        o = k.parse(k.get(entry))
+        # l = o['BRITE'].replace("             ", "")
+        # l[l.index("Target-based"):]
+        if type(o) is dict:
+            if "BRITE" in o:
+                brite.append(o['BRITE'].strip())
+            if "EFFICACY" in o:
+                efficacy.append(o['EFFICACY'].strip())
+        else:
+            brite.append(o[o.index("BRITE"):o.index("DBLINKS")].strip())
+            efficacy.append(o[o.index("EFFICACY"):o.index("DISEASE")].strip())
+    brite = pd.Series(brite, index=annot5['kegg_drug'].dropna().unique())
+    efficacy = pd.Series(efficacy, index=annot5['kegg_drug'].dropna().unique())
+
+    efficacy = (
+        efficacy.str.split("\n").apply(lambda x: x[0]).str.strip()
+        .str.split(",").apply(pd.Series).stack().str.strip()
+        .reset_index(level=1, drop=True))
+    efficacy.index.name = 'kegg_drug'
+    efficacy.name = 'kegg_efficacy'
+
+    annot6 = pd.merge(annot5, efficacy.reset_index())
+    annot6.to_csv(os.path.join("metadata", "drugs_annotated.with_ATC_chembl_chebi_kegg_ontology_keggdrug.kegg_efficacy.20180809.csv"), index=False)
+
+    annot6[['drug', 'kegg_efficacy']].drop_duplicates().to_csv(os.path.join("metadata", "drugs_annotated.kegg_efficacy.20180809.slim.csv"), index=False)
+
+
+    q = brite.str.split("\n").apply(pd.Series).stack().str.strip().value_counts().sort_values()
+    q[(~q.index.str.contains(r'^D\d+')) & (~q.index.str.contains(r'^L\d+'))]
+
+
+
+    #     brite[entry] = [ss.strip() for ss in s]
+
 
     # KEGG: gene -> pathways
     k = KEGG()
@@ -2617,8 +2880,8 @@ def annotate_drugs(analysis, sensitivity):
     paths = paths.sort_values(['entrez_gene_symbol', 'kegg_pathway_name'])
     # match
     annot = pd.merge(annot, paths, on="entrez_gene_symbol", how="left")
-    annot.to_csv(os.path.join("metadata", "drugs_annotated.csv"), index=False)
-    annot = pd.read_csv(os.path.join("metadata", "drugs_annotated.csv"))
+    annot.to_csv(os.path.join("metadata", "drugs_annotated.20180809.csv"), index=False)
+    annot = pd.read_csv(os.path.join("metadata", "drugs_annotated.20180809.csv"))
 
     # Cleanup (reduce redudancy of some)
     annot = annot.replace("n/a", pd.np.nan)
@@ -2698,7 +2961,7 @@ def annotate_drugs(analysis, sensitivity):
     # how many genes per drug?
     axis[0].set_title("Genes per drug")
     mats0 = annot.groupby(["proper_name"])['entrez_gene_symbol'].nunique()
-    mats0_a = dgidb.groupby(["drug_primary_name"])['entrez_gene_symbol'].nunique()
+    mats0_a = dgidb.groupby(["drug_claim_primary_name"])['entrez_gene_symbol'].nunique()
     axis[0].hist([mats0, mats0_a], max(mats0.tolist() + mats0_a.tolist()), normed=True, histtype='bar', align='mid', alpha=0.8)
     axis[0].set_xlabel("Genes")
 
@@ -2708,40 +2971,40 @@ def annotate_drugs(analysis, sensitivity):
     # support of each drug-> gene assignment
     axis[1].set_title("Support of each interaction")
     mats1 = annot.groupby(["proper_name", "entrez_gene_symbol"])['interaction_claim_source'].nunique()
-    mats1_a = dgidb.groupby(["drug_primary_name", "entrez_gene_symbol"])['interaction_claim_source'].nunique()
+    mats1_a = dgidb.groupby(["drug_claim_primary_name", "entrez_gene_symbol"])['interaction_claim_source'].nunique()
     axis[1].hist([mats1, mats1_a], max(mats1.tolist() + mats1_a.tolist()), normed=True, histtype='bar', align='mid', alpha=0.8)
     axis[1].set_xlabel("Sources")
 
     # types of interactions per drug (across genes)
     axis[2].set_title("Interaction types per drug")
     mats2 = annot.groupby(["proper_name"])['interaction_types'].nunique()
-    mats2_a = dgidb.groupby(["drug_primary_name"])['interaction_types'].nunique()
+    mats2_a = dgidb.groupby(["drug_claim_primary_name"])['interaction_types'].nunique()
     axis[2].hist([mats2, mats2_a], max(mats2.tolist() + mats2_a.tolist()), normed=True, histtype='bar', align='mid', alpha=0.8)
     axis[2].set_xlabel("Interaction types")
 
     # types of interactions per drug-> assignemnt
     axis[3].set_title("Interactions types per drug->gene interaction")
     mats3 = annot.groupby(["proper_name", "entrez_gene_symbol"])['interaction_types'].nunique()
-    mats3_a = dgidb.groupby(["drug_primary_name", "entrez_gene_symbol"])['interaction_types'].nunique()
+    mats3_a = dgidb.groupby(["drug_claim_primary_name", "entrez_gene_symbol"])['interaction_types'].nunique()
     axis[3].hist([mats3, mats3_a], max(mats3.tolist() + mats3_a.tolist()), normed=True, histtype='bar', align='mid', alpha=0.8)
     axis[3].set_xlabel("Interaction types")
 
     # types of categories per drug (across genes)
     axis[4].set_title("Categories per drug")
     mats4 = annot.groupby(["proper_name"])['interaction_types'].nunique()
-    mats4_a = dgidb.groupby(["drug_primary_name"])['interaction_types'].nunique()
+    mats4_a = dgidb.groupby(["drug_claim_primary_name"])['interaction_types'].nunique()
     axis[4].hist([mats4, mats4_a], max(mats4.tolist() + mats4_a.tolist()), normed=True, histtype='bar', align='mid', alpha=0.8)
     axis[4].set_xlabel("Categories")
 
     # types of categories per drug-> assignemnt
     axis[5].set_title("Categories per drug->gene interaction")
     mats5 = annot.groupby(["proper_name", "entrez_gene_symbol"])['interaction_types'].nunique()
-    mats5_a = dgidb.groupby(["drug_primary_name", "entrez_gene_symbol"])['interaction_types'].nunique()
+    mats5_a = dgidb.groupby(["drug_claim_primary_name", "entrez_gene_symbol"])['interaction_types'].nunique()
     axis[5].hist([mats5, mats5_a], max(mats5.tolist() + mats5_a.tolist()), normed=True, histtype='bar', align='mid', alpha=0.8)
     axis[5].set_xlabel("Categories")
 
     sns.despine(fig)
-    fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-gene.annotations.svg"), bbox_inches="tight")
+    fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-gene.annotations.20180725.svg"), bbox_inches="tight")
 
     # distributions of drug-pathway annotations
     fig, axis = plt.subplots(2, 3, figsize=(12, 8))
@@ -2784,7 +3047,7 @@ def annotate_drugs(analysis, sensitivity):
     axis[5].set_xlabel("Score")
 
     sns.despine(fig)
-    fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-pathway.annotations.svg"), bbox_inches="tight")
+    fig.savefig(os.path.join(output_dir, "pharmacoscopy.drug-pathway.annotations.20180725.svg"), bbox_inches="tight")
 
     # Drug vs Category
     annot['intercept'] = 1
@@ -3449,6 +3712,97 @@ def pharmacoscopy(analysis):
     g.fig.savefig(os.path.join(output_dir, "pharmacoscopy.sensitivity.pathway_space.differential.abs_diff.pathway_correlation.svg"), bbox_inches='tight', dpi=300)
 
 
+
+    # Pharmacoscopy aggregated by drug classes/ontology 20180809
+    pharma = pd.read_csv(os.path.join("metadata", "KEGG_annotate_per_drug_selectivity_score_09082018.csv"), index_col=0)
+
+    # kegg
+    ont = pd.read_csv(os.path.join("metadata", 'drugs_annotated.with_ATC_chembl_chebi_kegg_ontology.20180809.slim.csv'), index_col=0, squeeze=True)
+
+    # atc
+    all_ = pd.read_csv(os.path.join("metadata", 'drugs_annotated.with_ATC_chembl_chebi_kegg_ontology.20180809.csv'), index_col=0)
+    atc = pd.read_csv(os.path.join("metadata", "atc.20180809.csv"))
+    atc_ = pd.merge(all_.reset_index(), atc)[['drug', 'ATC_term']].drop_duplicates()
+    atc_ = atc_.set_index("drug").squeeze()
+
+    atc_.drop_duplicates().to_csv(os.path.join("metadata", 'drugs_annotated.atc.20180809.slim.csv'), index=True)
+
+    atc_ = atc_.loc[~(atc_.index.str.lower() == atc_.str.lower())]
+
+    # kegg efficacy
+    kegg_efficacy = pd.read_csv(os.path.join("metadata", "drugs_annotated.kegg_efficacy.20180809.slim.csv"), index_col=0, squeeze=True)
+
+    for df, label in [(ont, "chebi_ontology"), (atc_, "ATC_term"), (kegg_efficacy, "kegg_efficacy")]:
+
+        df = df.copy()
+        df.name = "ontology_term"
+        m = pd.merge(pharma, df.reset_index())
+
+        sel = ['selectivity_score_after', 'selectivity_score_before']
+        m2 = m[sel + ['ontology_term', 'drug']].drop_duplicates()
+        m3 = m2.groupby("ontology_term")[sel].mean()
+        cv3 = (m2.groupby("ontology_term")[sel].mean() / m2.groupby("ontology_term")[sel].std()) + 1
+        c2 = m2.groupby("ontology_term")[sel[0]].count()
+        c2.name = 'count'
+
+        m_diff = (m3['selectivity_score_after'] - m3['selectivity_score_before'])
+        m_diff.name = "change"
+        cv_diff = np.log2(cv3['selectivity_score_after'] / cv3['selectivity_score_before'])
+        cv_diff.name = "change"
+
+        # m_diff.loc[c2[c2 > 1].index]
+
+        from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+        fig, axis = plt.subplots(1, 2, figsize=(2 * 4, 4))
+        axis[0].set_title("Drug class reduction function: Mean")    
+        cs = axis[0].scatter(np.log2(1 + m3.mean(axis=1)), m_diff, c=np.log10(c2), alpha=0.5)
+        # divider = make_axes_locatable(axis[0])
+        # cax = divider.append_axes("right", size="5%", pad=0.05)
+        # plt.colorbar(mappable=cs, cax=cax, label="drugs per term (log10)")
+        axis[0].axhline(0, linestyle="--", color="black", alpha=0.75)
+        for t in m_diff.sort_values().dropna().head(10).index:
+            axis[0].text(np.log2(1 + m3.mean(axis=1).loc[t]), m_diff.loc[t], s=t, ha="center", fontsize=5, zorder=100)
+        for t in m_diff.sort_values().dropna().tail(15).index:
+            axis[0].text(np.log2(1 + m3.mean(axis=1).loc[t]), m_diff.loc[t], s=t, ha="center", fontsize=5, zorder=100)
+
+        axis[1].set_title("Drug class reduction function: Mean / Std")    
+        cs = axis[1].scatter(np.log2(1 + cv3.mean(axis=1)), cv_diff, c=np.log10(c2), alpha=0.5)
+        divider = make_axes_locatable(axis[1])
+        cax = divider.append_axes("right", size="5%", pad=0.05)
+        plt.colorbar(mappable=cs, cax=cax, label="drugs per term (log10)")
+        axis[1].axhline(0, linestyle="--", color="black", alpha=0.75)
+        for t in cv_diff.sort_values().dropna().head(10).index:
+            axis[1].text(np.log2(1 + cv3.mean(axis=1).loc[t]), cv_diff.loc[t], s=t, ha="center", fontsize=5, zorder=100)
+        for t in cv_diff.sort_values().dropna().tail(15).index:
+            axis[1].text(np.log2(1 + cv3.mean(axis=1).loc[t]), cv_diff.loc[t], s=t, ha="center", fontsize=5, zorder=100)
+        for ax in axis:
+            ax.set_xlabel("Selectivity across timepoints")
+        axis[0].set_ylabel("Difference in selectivity (during/before ibrutinib)")
+        sns.despine(fig)
+        fig.savefig(os.path.join("results", "drugs_annotated.{}.20180809.MA_cv.scatterplot.svg".format(label)), bbox_inches="tight", dpi=300)
+
+
+        fig, axis = plt.subplots(1, 2, figsize=(2 * 4, 0.12 * m_diff.shape[0]))
+        axis[0].set_title("Drug class reduction function: Mean")
+        axis[1].set_title("Drug class reduction function: Mean/Std - only terms with >1 drug")
+        p = m3.loc[m_diff.sort_values().index]
+        sns.heatmap(
+            p.join(m_diff),
+            cmap="coolwarm", center=0, vmin=p.min().min(), vmax=p.max().max(),
+            ax=axis[0], yticklabels=True, rasterized=True)
+        p = np.log10(cv3.loc[cv_diff.sort_values().dropna().index].dropna())
+        sns.heatmap(
+            p.join(cv_diff),
+            cmap="coolwarm", center=0, vmin=p.min().min(), vmax=p.max().max(),
+            ax=axis[1], yticklabels=True, rasterized=True)
+        for ax in axis:
+            ax.set_ylabel("Ontology term (sorted by change)")
+            ax.set_yticklabels(ax.get_yticklabels(), fontsize=3, va="center")
+        fig.tight_layout()
+        fig.savefig(os.path.join("results", "drugs_annotated.{}.20180809.MA_cv.heatmaps.svg".format(label)), bbox_inches="tight", dpi=300)
+
+
 def atac_to_pathway(analysis, samples=None):
     """
     Quantify the activity of each pathway by the accessibility of the regulatory elements of its genes.
@@ -3641,6 +3995,10 @@ def atac_to_pathway(analysis, samples=None):
     # rank vs cross-patient sensitivity
     normalizer = matplotlib.colors.Normalize(vmin=changes['fold_change'].min(), vmax=changes['fold_change'].max())
 
+    (changes[['fold_change']]
+        .sort_values('fold_change', ascending=False)
+        .to_csv(os.path.join("source_data", "fig2i.csv"), index=True))
+
     fig, axis = plt.subplots(1, figsize=(4, 4))
     axis.scatter(changes['fold_change'].rank(method="dense"), changes['fold_change'], color=plt.cm.inferno(normalizer(changes['fold_change'])), alpha=0.5, s=4 + (5 ** z_score(changes["mean"])))
     axis.axhline(0, color="black", alpha=0.8, linestyle="--")
@@ -3690,59 +4048,169 @@ def atac_to_pathway(analysis, samples=None):
     fig.savefig(os.path.join(analysis.results_dir, "pathway-pharmacoscopy.scatter.png"), bbox_inches='tight', dpi=300)
 
     # globally
-    changes = pd.read_csv(os.path.join(analysis.results_dir, "pathway.sample_accessibility.size-log2_fold_change-p_value.q_value.csv"), index_col=0)
-    pharma_global = pd.read_csv(os.path.join("results", "pharmacoscopy", "pharmacoscopy.sensitivity.pathway_space.differential.changes.csv"), index_col=0)
+    changes = pd.read_csv(os.path.join("https://biomedical-sequencing.at/bocklab/arendeiro/cll-ibrutinib/pathway.sample_accessibility.size-log2_fold_change-p_value.q_value.csv"), index_col=0)
+    # changes = pd.read_csv(os.path.join("results", "pathway.sample_accessibility.size-log2_fold_change-p_value.q_value.csv"), index_col=0)
+    # pharma_global = pd.read_csv(os.path.join("results", "pharmacoscopy", "pharmacoscopy.sensitivity.pathway_space.differential.changes.csv"), index_col=0)
+    # pharma_global = pd.read_csv(os.path.join("results", "pharmacoscopy", "pharmacoscopy.sensitivity.pathway_space.differential.changes.csv"), index_col=0)
     # filter out drugs/pathways which after Ibrutinib are not more CLL-specific
     # pharma_global = pharma_global[pharma_global['after_Ibrutinib'] >= 0]
 
-    pharma_change = pharma_global['fold_change']
+    # changes = pd.read_csv("http://www.medical-epigenomics.org/papers/schmidl2017/data/accessibility.pathway_space.csv", index_col=0)
+    # changes = changes.T
+    # changes['patient_id'] = list(map(lambda x: x[0], changes.index.str.split("_")))
+    # changes['timepoint'] = list(map(lambda x: x[1], changes.index.str.split("_")))
+    # changes = changes.groupby("timepoint").mean().T
+    # changes['fold_change'] = changes['post'] - changes['pre']
+
+    # pcy = pd.read_csv(os.path.join("metadata", "PCY_with_KEGG_andre_seperate.csv"))
+    # pcy = pcy.drop(['kegg_pathway_id', 'kegg_pathway_name'], axis=1)
+    pcy = pd.read_csv(os.path.join("source_data", "KEGG_annotate_per_drug_selectivity_score_13082018_full.csv"), index_col=0)
+    pcy = pcy.drop(['kegg_pathway_name'], axis=1)
+
+    # add new drug annotation
+    rename = {
+        "ABT-199 = Venetoclax": "Venetoclax",
+        "ABT-263 = Navitoclax": "Navitoclax",
+        "ABT-869 = Linifanib": "Linifanib",
+        "AC220 = Quizartinib": "Quizartinib",
+        "Buparlisib (BKM120)": "Buparlisib",
+        "EGCG = Epigallocatechin gallate": "Epigallocatechin gallate",
+        "JQ1": "JQ1",
+        "MLN-518 = Tandutinib": "Tandutinib",
+        "Selinexor (KPT-330)": "Selinexor"}
+    pcy["proper_name"] = pcy["drug"]
+    for p, n in rename.items():
+        pcy["proper_name"] = pcy["proper_name"].replace(p, n)
+
+    # annot = pd.read_csv(os.path.join("metadata", "drugs_annotated.20180725.csv"))
+    # annot = pd.read_csv("https://biomedical-sequencing.at/bocklab/arendeiro/cll-ibrutinib/drugs_annotated.20180725.csv")
+    # annot = annot[['drug', 'proper_name', 'kegg_pathway_name']].drop_duplicates().dropna()
+    # annot['kegg_pathway_name'] = list(map(lambda x: x[0], annot['kegg_pathway_name'].str.split(" - ")))
+    # annot = annot.drop_duplicates()
+
+    # pcy2 = pd.merge(pcy, annot, on="proper_name", how="left")
+
+    # mean = pcy2.groupby('kegg_pathway_name')["diff"].mean().sort_values()
+    # std = pcy2.groupby('kegg_pathway_name')["diff"].std().sort_values()
+    # pharma_change = (mean) # / std
+    # # sign =  (pharma_change >= 0).astype(int).replace(0, -1)
+    # # pharma_change = ((pharma_change.abs()) ** (1. / 3)) * sign
+    # pharma_change = pharma_change.loc[~np.isinf(pharma_change)]
+    # pharma_change.name = "pharmacoscopy"
+    pharma_change = pcy.groupby('kegg_pathway_name')['diff'].mean()
     pharma_change.name = "pharmacoscopy"
-    p = changes.join(pharma_change).fillna(0)
+    p = changes.join(pharma_change, how="outer")
+
+    # collapse redundant pathways
+    p.index = map(lambda x: x.split(" - ")[0], p.index)
+
+    # and take maximum effect dependent on direction
+    def max_effect(x):
+        # print(x)
+        x = x.dropna()
+        sign = (x >= 0).astype(bool).astype(int).replace(0, -1).unique()
+        if len(sign) == 1:
+            return sign[0] * x.abs().max()
+        else:
+            return x.mean()
+
+    p2 = p.groupby(level=0)['pharmacoscopy'].apply(max_effect).to_frame()
+    p2['fold_change'] = p.groupby(level=0)['fold_change'].apply(max_effect)
+    # keep only pathways with more than X drugs
+    # above = pcy.groupby('kegg_pathway_name')['proper_name'].count()[(pcy.groupby('kegg_pathway_name')['proper_name'].nunique() >= 5)].index
+    # above = map(lambda x: x.split(" - ")[0], above)
+    # p = p.loc[above].dropna().drop_duplicates()
 
     # scatter
-    n_to_label = 15
+    n_to_label = 10
     custom_labels = p.index[p.index.str.contains("apoptosis|pi3k|proteasome|ribosome|nfkb", case=False)].tolist()
+    custom_labels = p.index[p.index.str.contains("|".join([
+        "Autophagy",
+        "Apoptosis",
+        "FoxO",
+        "JAK-Stat signaling",
+        "TGF-beta",
+        "PI3K-Akt",
+        "Transcriptional misregulation in cancer",
+        "RIG-I-like receptor signaling pathway",
+        "Inositol phosphate metabolism",
+        "Mismatch repair",
+        "PPAR signaling pathway",
+        "DNA replication",
+        "Base excision repair"
+    ]), case=False)].tolist()
 
-    combined_diff = (p['fold_change'] + p['pharmacoscopy']).dropna()
+    import scipy
+    p = p2.dropna().drop_duplicates().apply(scipy.stats.zscore)
+    # p.to_csv(os.path.join("results", "atac-pharmacoscopy.new_annot.across_patients.combined_rank.20180726.csv"))
+    combined_diff = p.mean(axis=1)
+
+    # p.rename(columns={"fold_change": "atac-seq"}).to_csv(os.path.join("source_data", "fig4a.csv"), index=True)
+    sd = combined_diff.to_frame(name="combined_change")
+    sd.index.name = "pathway"
+    # sd.to_csv(os.path.join("source_data", "figs4.csv"), index=True)
+
     m = max(abs(combined_diff.min()), abs(combined_diff.max()))
     normalizer = matplotlib.colors.Normalize(vmin=-m, vmax=m)
 
     for cmap in ["Spectral_r", "coolwarm", "BrBG"]:
         already = list()
         fig, axis = plt.subplots(1, 1, figsize=(4 * 1, 4 * 1))
-        axis.scatter(p['fold_change'], p['pharmacoscopy'], alpha=0.8, color=plt.get_cmap(cmap)(normalizer(combined_diff)))
+        axis.scatter(p['fold_change'], p['pharmacoscopy'], alpha=0.8, color=plt.get_cmap(cmap)(normalizer(combined_diff.values)))
         axis.axhline(0, color="black", linestyle="--", alpha=0.5)
         axis.axvline(0, color="black", linestyle="--", alpha=0.5)
         # annotate top pathways
         # combined
         for path in [x for x in combined_diff.sort_values().head(n_to_label).index if x not in already]:
-            axis.text(p['fold_change'].ix[path], p['pharmacoscopy'].ix[path], path, ha="right")
+            axis.text(p.loc[path, 'fold_change'], p.loc[path, 'pharmacoscopy'], path, ha="right")
             already.append(path)
         for path in [x for x in combined_diff.sort_values().tail(n_to_label).index if x not in already]:
-            axis.text(p['fold_change'].ix[path], p['pharmacoscopy'].ix[path], path, ha="left")
+            axis.text(p.loc[path, 'fold_change'], p.loc[path, 'pharmacoscopy'], path, ha="left")
             already.append(path)
         # individual
-        for path in [x for x in p['fold_change'].sort_values().head(n_to_label).index if x not in already]:
-            axis.text(p['fold_change'].ix[path], p['pharmacoscopy'].ix[path], path, ha="right", color="orange")
-            already.append(path)
-        for path in [x for x in p['pharmacoscopy'].sort_values().head(n_to_label).index if x not in already]:
-            axis.text(p['fold_change'].ix[path], p['pharmacoscopy'].ix[path], path, ha="left", color="green")
-            already.append(path)
-        for path in [x for x in p['fold_change'].sort_values().tail(n_to_label).index if x not in already]:
-            axis.text(p['fold_change'].ix[path], p['pharmacoscopy'].ix[path], path, ha="left", color="orange")
-            already.append(path)
-        for path in [x for x in p['pharmacoscopy'].sort_values().tail(n_to_label).index if x not in already]:
-            axis.text(p['fold_change'].ix[path], p['pharmacoscopy'].ix[path], path, ha="right", color="green")
-            already.append(path)
+        # for path in [x for x in p['fold_change'].sort_values().head(n_to_label).index if x not in already]:
+        #     axis.text(p.loc[path, 'fold_change'], p.loc[path, 'pharmacoscopy'], path, ha="right", color="orange")
+        #     already.append(path)
+        # for path in [x for x in p['pharmacoscopy'].sort_values().head(n_to_label).index if x not in already]:
+        #     axis.text(p.loc[path, 'fold_change'], p.loc[path, 'pharmacoscopy'], path, ha="left", color="green")
+        #     already.append(path)
+        # for path in [x for x in p['fold_change'].sort_values().tail(n_to_label).index if x not in already]:
+        #     axis.text(p.loc[path, 'fold_change'], p.loc[path, 'pharmacoscopy'], path, ha="left", color="orange")
+        #     already.append(path)
+        # for path in [x for x in p['pharmacoscopy'].sort_values().tail(n_to_label).index if x not in already]:
+        #     axis.text(p.loc[path, 'fold_change'], p.loc[path, 'pharmacoscopy'], path, ha="right", color="green")
+        #     already.append(path)
         # custom
         for path in [x for x in custom_labels if x not in already]:
-            axis.text(p['fold_change'].ix[path], p['pharmacoscopy'].ix[path], path, ha="center", color="blue")
+            if path in p.index:
+                axis.text(p.loc[path, 'fold_change'], p.loc[path, 'pharmacoscopy'], path, ha="center", color="blue")
             already.append(path)
+        # axis.set_ylim((-.2, .2))
         axis.set_xlabel("ATAC-seq change in pathway accessibility", ha="center")
         axis.set_ylabel("Pharmacoscopy change in pathway sensitivity", ha="center")
         sns.despine(fig)
-        fig.savefig(os.path.join(analysis.results_dir, "atac-pharmacoscopy.across_patients.scatter.{}.svg".format(cmap)), bbox_inches='tight', dpi=300)
+        fig.savefig(os.path.join("results", "atac-pharmacoscopy.new_annot.across_patients.mean.scatter.{}.20180816.svg".format(cmap)), bbox_inches='tight', dpi=300)
+        # fig.savefig(os.path.join("results", "atac-pharmacoscopy.new_annot.across_patients.mean.scatter.{}.20180726.svg".format(cmap)), bbox_inches='tight', dpi=300)
         # fig.savefig(os.path.join(analysis.results_dir, "atac-pharmacoscopy.across_patients.scatter.only_positive.svg"), bbox_inches='tight', dpi=300)
+
+
+    combined_diff = combined_diff.sort_values(ascending=False)
+    fig, axis = plt.subplots(1, 3, figsize=(3 * 4, 4))
+    axis[0].axhline(0, linestyle="--", alpha=0.5, color="black")
+    axis[0].scatter(combined_diff.rank(ascending=False), combined_diff, s=5, alpha=1, c=combined_diff, cmap="coolwarm")
+    sns.barplot(combined_diff.head(10).index, combined_diff.head(10), ax=axis[1], palette="Reds_r")
+    sns.barplot(combined_diff.tail(10).index, combined_diff.tail(10), ax=axis[2], palette="Blues")
+    axis[0].set_xlabel("Combined ATAC-seq/Pharmacoscopy change (rank)", ha="center")
+    axis[0].set_ylabel("Combined ATAC-seq/Pharmacoscopy change", ha="center")
+    axis[1].set_xlabel("Pathway (top 10)", ha="center")
+    axis[2].set_xlabel("Pathway (bottom 10)", ha="center")
+    for ax in axis[1:]:
+        ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
+        ax.set_ylabel("Combined ATAC-seq/Pharmacoscopy change", ha="center")
+    sns.despine(fig)
+    fig.savefig(os.path.join("results", "atac-pharmacoscopy.new_annot.across_patients.combined_rank.20180816.svg"), bbox_inches='tight', dpi=300)
+
+
 
     # individually
     pharma_patient = pd.read_csv(os.path.join("results", "pharmacoscopy", "pharmacoscopy.sensitivity.pathway_space.differential.patient_specific.abs_diff.csv"), index_col=0)
@@ -4921,7 +5389,7 @@ class RNASeqAnalysis(Analysis):
 
         # Extract significant based on p-value and fold-change
         # diff = df.loc[df.sort_values(["log2FoldChange"]).head(200).index.tolist() + df.sort_values(["log2FoldChange"]).tail(200).index.tolist(), :]
-        diff = df[(df["pvalue"] < 0.01) & (abs(df["log2FoldChange"]) > np.log2(1.25))]
+        diff = df[(df["pvalue"] < 0.01) & (abs(df["log2FoldChange"]) > np.log2(1))]
 
         if diff.shape[0] < 1:
             print("No significantly different regions found.")
@@ -5255,6 +5723,18 @@ class RNASeqAnalysis(Analysis):
         g = sns.clustermap(df2[[s.name for s in sel_samples]], yticklabels=False, z_score=0, cbar_kws={"label": "Z-score of expression\non differential genes"}, metric="correlation", rasterized=True)
         g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
         g.fig.savefig(os.path.join(output_dir, "%s.%s.diff_genes.samples.clustermap.z0.svg" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
+
+        # ordered by patient
+        sel_samples = sorted(sel_samples, key=lambda s: (s.patient_id, s.timepoint_name), reverse=True)
+
+        g = sns.clustermap(df2[[s.name for s in sel_samples]], yticklabels=False, col_cluster=False, z_score=0, cbar_kws={"label": "Z-score of expression\non differential genes"}, metric="correlation", rasterized=True)
+        g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+        g.fig.savefig(os.path.join(output_dir, "%s.%s.diff_genes.samples.clustermap.z0.sorted_patients.svg" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
+
+        # ordered by strnegth of down/upregulation
+        g = sns.clustermap(df2[df2.mean().sort_values().index[:-2]], yticklabels=False, col_cluster=False, z_score=0, cbar_kws={"label": "Z-score of expression\non differential genes"}, metric="correlation", rasterized=True)
+        g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
+        g.fig.savefig(os.path.join(output_dir, "%s.%s.diff_genes.samples.clustermap.z0.sorted_signature.svg" % (output_suffix, trait)), bbox_inches="tight", dpi=300)
 
         # Get enrichments for the top genes in each side
         diff = df.loc[df.sort_values(["log2FoldChange"]).head(200).index.tolist() + df.sort_values(["log2FoldChange"]).tail(200).index.tolist(), :]
@@ -5788,13 +6268,306 @@ def rna_to_pathway(rna, samples=None):
         metric="correlation", row_cluster=True, col_cluster=False, z_score=0)
     g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
     g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
-    g.savefig(os.path.join(rna.results_dir, "pathway_expression.Proteasome.heatmap.png"), bbox_inches='tight', dpi=300)
+    g.savefig(os.path.join(rna.results_dir, "pathway_expression.Proteasome.heatmap.svg"), bbox_inches='tight', dpi=300)
 
     g = sns.clustermap(
         cov_diff,
         metric="correlation", row_cluster=True, col_cluster=True)
     g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90)
     g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0)
+
+
+def visualize_interaction_p_values():
+    """
+    """
+    sns.set_style("white")
+
+
+    variables = [
+        "ighv_mutation_status",
+        "CD38_positive",
+        "del11q_threshold",
+        "del13q_threshold",
+        "del17p_threshold",
+        "tri12_threshold",
+        "p53"]
+
+    all_res = pd.DataFrame()
+
+    for i, variable in enumerate(variables):
+        res = pd.read_csv(
+            os.path.join("results", "cll-ibrutinib_AKH.ibrutinib_treatment",
+                "cll-ibrutinib_AKH.ibrutinib_treatment.interaction_timepoint-" + variable + ".csv"),
+            index_col=0)
+        res["variable"] = variable
+        all_res = all_res.append(res.reset_index(), ignore_index=True)
+
+    fig1, axis1 = plt.subplots(2, 4, figsize=(4 * 4, 2 * 4), sharex=True, sharey=True)
+    fig2, axis2 = plt.subplots(2, 4, figsize=(4 * 4, 2 * 4), sharex=True, sharey=True)
+    fig3, axis3 = plt.subplots(2, 4, figsize=(4 * 4, 2 * 4), sharex=True, sharey=True)
+    fig4, axis4 = plt.subplots(2, 4, figsize=(4 * 4, 2 * 4), sharex=True, sharey=True)
+    for i, variable in enumerate(variables):
+        res = all_res[all_res["variable"] == variable]
+        ax = axis1.flatten()[i]
+        sns.distplot(res['pvalue'].dropna(), ax=ax, kde=False)
+        ax.axvline(0.415e-6, linestyle="--", color="grey")
+        ax.set_title(variable)
+
+        ax = axis2.flatten()[i]
+        sns.distplot(-np.log10(res['pvalue'].dropna()), ax=ax, kde=False)
+        ax.axvline(-np.log10(0.415e-6), linestyle="--", color="grey")
+        ax.set_title(variable)
+
+        ax = axis3.flatten()[i]
+        sns.distplot(res['padj'].dropna(), ax=ax, kde=False)
+        ax.axvline(-np.log10(0.05), linestyle="--", color="grey")
+        ax.set_title(variable)
+
+        ax = axis4.flatten()[i]
+        sns.distplot(-np.log10(res['padj'].dropna()), ax=ax, kde=False)
+        ax.axvline(-np.log10(0.05), linestyle="--", color="grey")
+        ax.set_title(variable)
+    fig1.savefig(os.path.join("results", "interaction_pvalues.svg"), bbox_inches="tight")
+    fig2.savefig(os.path.join("results", "interaction_pvalues.log10.svg"), bbox_inches="tight")
+    fig3.savefig(os.path.join("results", "interaction_pvalues.padj.svg"), bbox_inches="tight")
+    fig4.savefig(os.path.join("results", "interaction_pvalues.padj.log10.svg"), bbox_inches="tight")
+
+
+    fig, axis = plt.subplots(2, 4, figsize=(4 * 4, 2 * 4), sharex=False, sharey=True)
+    for i, variable in enumerate(variables):
+        res = all_res[all_res["variable"] == variable]
+
+        ax = axis.flatten()[i]
+        ix = res['pvalue'].dropna().index
+        ax.scatter(res.loc[ix, "log2FoldChange"], -np.log10(res.loc[ix, "pvalue"]), alpha=0.2, s=2, rasterized=True)
+        ax.set_title(variable)
+        ax.axvline(0, linestyle="--", color="grey", zorder=0)
+
+    fig.savefig(os.path.join("results", "interaction_pvalues.volcano.svg"), bbox_inches="tight")
+
+    fig, axis = plt.subplots(1, figsize=(4, 4))
+    sns.barplot(-np.log10(all_res.groupby('variable')['padj'].min().sort_values()), all_res.groupby('variable')['padj'].min().sort_values().index, ax=axis, orient="horizontal")
+    axis.axvline(-np.log10(0.05), linestyle="--", color="grey")
+    fig.savefig(os.path.join("results", "interaction_pvalues.min.barplot.svg"), bbox_inches="tight")
+
+
+def export_tables_for_pathways(
+        pathways=['autophagy', 'proteasome']
+        # pathways=['mtor', 'pi3k']
+    ):
+    """
+    """
+    from scipy.stats import zscore
+
+    # get genes 
+    pathway_gene = pickle.load(open(os.path.join("metadata", "pathway_gene_annotation_kegg.pickle"), "rb"))
+    pathway_gene = pd.concat(
+        [pd.Series(genes, index=[path for _ in genes]) for path, genes in pathway_gene.items()]
+    ).squeeze()
+    genes = pathway_gene[pathway_gene.index.str.contains("|".join(pathways), case=False)].drop_duplicates()
+
+    # get accessibility changes at gene level
+    atac = pd.read_csv(
+        os.path.join(
+            "results",
+            "cll-ibrutinib_AKH.ibrutinib_treatment",
+            "cll-ibrutinib_AKH.ibrutinib_treatment.timepoint_name.diff_regions.gene_level.fold_change.csv"), index_col=0, header=None)
+    atac.columns = ['log2FoldChange']
+    atac.index.name = 'gene'
+
+    atac.loc[genes].sort_values('log2FoldChange', ascending=False).dropna().to_csv(
+        os.path.join(
+            "ibrutinib_treatment_accessibility.{}_genes.after_ibrutinib-before_ibrutinib.csv".format(",".join(pathways))), index=True)
+
+    # get gene expression changes
+    expr = pd.read_csv(
+        os.path.join(
+            "results",
+            "ibrutinib_treatment_expression",
+            "ibrutinib_treatment_expression.batch-timepoint_name.after_ibrutinib-before_ibrutinib.csv"), index_col=0)
+    expr = expr.rename(columns={"baseMean": "mean_expression", "padj": "adjusted_p_value"}).drop(['lfcSE', 'stat'], axis=1)
+
+    expr.loc[genes].dropna().to_csv(
+        os.path.join(
+            "ibrutinib_treatment_expression.{}_genes.after_ibrutinib-before_ibrutinib.csv".format(",".join(pathways))), index=True)
+
+
+    # miracle plot
+    p_all = atac.rename(columns={"log2FoldChange": "ATAC-seq"}).join(expr.rename(columns={"log2FoldChange": "RNA-seq"}).loc[:, "RNA-seq"]).dropna()
+    p = atac.rename(columns={"log2FoldChange": "ATAC-seq"}).loc[genes].join(expr.rename(columns={"log2FoldChange": "RNA-seq"}).loc[genes, "RNA-seq"]).dropna()
+
+    top_n = 20
+
+    top_genes = p.apply(zscore).dropna().abs().sum(1).sort_values().tail(top_n).index
+
+    fig, axis = plt.subplots(1, 2, figsize=(2 * 4, 4))
+    axis[0].scatter(p_all['ATAC-seq'], p_all['RNA-seq'], s=2, alpha=0.1, rasterized=True)
+    axis[1].scatter(p['ATAC-seq'], p['RNA-seq'], s=2, alpha=0.5)
+    for g in top_genes:
+        axis[1].text(x=p.loc[g, 'ATAC-seq'], y=p.loc[g, 'RNA-seq'], s=g, fontsize=5)
+    for ax in axis:
+        ax.axhline(0, color="black", alpha=0.5, zorder=-100)
+        ax.axvline(0, color="black", alpha=0.5, zorder=-100)
+    axis[0].set_xlim((-1.5, 1.5))
+    axis[0].set_ylim((-1, 1))
+    axis[1].set_xlim((-1.5, 1.5))
+    axis[1].set_ylim((-1, 1))
+    for ax in axis:
+        ax.set_xlabel("ATAC-seq\n(log2 fold-change)")
+    axis[0].set_ylabel("RNA-seq\n(log2 fold-change)")
+    axis[0].set_title("All genes")
+    axis[1].set_title("Genes in {} pathways".format(" and ".join(pathways)))
+    fig.savefig(
+        os.path.join(
+            "ibrutinib_treatment_expression.{}_genes.miracle_plot2.svg"
+            .format(",".join(pathways))), dpi=300, bbox_inches="tight")
+
+
+
+def atac_expression_correlation():
+
+    # atac = pd.read_csv(
+    #     os.path.join("results", "cll-ibrutinib_AKH.accessibility.annotated_metadata.csv"),
+    #     index_col=0, header=range(24))
+    # atac -= atac.min().min()
+    # atac_m = atac.T.groupby("timepoint_name").mean().T
+    # atac_fc = np.log2(atac_m['after_Ibrutinib'] / atac_m['before_Ibrutinib'])
+    # _atac_m = atac.T.groupby("timepoint_name").mean().T / atac.T.groupby("timepoint_name").std().T
+    # _atac_fc = np.log2(_atac_m['after_Ibrutinib'] / _atac_m['before_Ibrutinib'])
+
+    # fig, axis = plt.subplots(1, 2, figsize=(2 * 4, 4))
+    # axis[0].scatter(atac_m.mean(axis=1), atac_fc, s=1, alpha=0.1, rasterized=True)
+    # axis[1].scatter(np.log2(1 + _atac_m.mean(axis=1)), _atac_fc, s=1, alpha=0.1, rasterized=True)
+    # sns.despine(fig)
+    # fig.savefig("accessibility.ma_plot.svg", dpi=300, bbox_inches="tight")
+
+    # # annotate with gene, get mean
+    # atac_gene_map = pd.read_csv(os.path.join("results", "cll-ibrutinib_AKH_peaks.gene_annotation.csv"))
+    # atac_gene_map.index = atac_gene_map['chrom'] + ":" + atac_gene_map['start'].astype(str) + "-" + atac_gene_map['end'].astype(str)
+    # atac_g_annot = atac_gene_map['gene_name'].str.split(",").apply(pd.Series).stack().reset_index(level=1, drop=True)
+
+    # atac_g_annot.name = "gene_name"
+    # atac_fc_g = atac_fc.to_frame(name="atac").join(atac_g_annot).groupby("gene_name").mean().squeeze()
+    # atac_fc_g_std = (
+    #     atac_fc.to_frame(name="atac").join(atac_g_annot).groupby("gene_name").mean() /
+    #     atac_fc.to_frame(name="atac").join(atac_g_annot).groupby("gene_name").std()).squeeze()
+    # _atac_fc_g = _atac_fc.to_frame(name="atac").join(atac_g_annot).groupby("gene_name").mean().squeeze()
+    # _atac_fc_g_std = (
+    #     _atac_fc.to_frame(name="atac").join(atac_g_annot).groupby("gene_name").mean() /
+    #     _atac_fc.to_frame(name="atac").join(atac_g_annot).groupby("gene_name").std()).squeeze()
+
+    # # # alternatively, get closest reg. element
+    # # q = atac_g_annot.to_frame(name="gene_name").join(atac_gene_map.drop('gene_name', axis=1))
+    # # qq = q.groupby('gene_name')['distance'].apply(np.argmin)
+    # # qq = qq.reset_index().set_index('distance').squeeze()
+    # # atac_fc_g = atac_fc.to_frame(name="atac").join(qq).groupby("gene_name").mean().squeeze()
+    # # atac_fc_g_std = (
+    # #     atac_fc.to_frame(name="atac").join(qq).groupby("gene_name").mean() /
+    # #     atac_fc.to_frame(name="atac").join(qq).groupby("gene_name").std()).squeeze()
+    # # _atac_fc_g = _atac_fc.to_frame(name="atac").join(qq).groupby("gene_name").mean().squeeze()
+    # # _atac_fc_g_std = (
+    # #     _atac_fc.to_frame(name="atac").join(qq).groupby("gene_name").mean() /
+    # #     _atac_fc.to_frame(name="atac").join(qq).groupby("gene_name").std()).squeeze()
+
+    # # Landau expression data
+    # expr = pd.read_excel(os.path.join("data", "RS_005_annotated_48_PB_median_gt_0_coding_RAW data.xlsx"))
+    # expr = expr.set_index("gene_name").drop(['gene_id', 'coding_status'], axis=1)
+
+    # # extract metadata
+    # expr2 = expr.copy()
+    # patient_id = map(lambda x: x[0], expr.columns.str.split("-"))
+    # timepoint = map(lambda x: int(x[-1]), expr.columns.str.split("-"))
+    # expr2.columns = pd.MultiIndex.from_arrays([patient_id, timepoint], names=['patient_id', 'timepoint'])
+
+    # # get only first and last timepoint per patient
+    # m = expr2.T.reset_index().groupby(['patient_id'])['timepoint'].min().reset_index()
+    # m = m.append(expr2.T.reset_index().groupby(['patient_id'])['timepoint'].max().reset_index())
+    # expr = expr.loc[:, m['patient_id'] + "-T-0" + m['timepoint'].astype(str)]
+    # # extract metadata
+    # patient_id = map(lambda x: x[0], expr.columns.str.split("-"))
+    # timepoint = map(lambda x: int(x[-1]), expr.columns.str.split("-"))
+    # timepoint = [t if t == 1 else 2 for t in timepoint]
+    # expr.columns = pd.MultiIndex.from_arrays([patient_id, timepoint], names=['patient_id', 'timepoint'])
+
+    # # Get fold change
+    # m = expr.T.groupby("timepoint").mean().T
+    # fc = np.log2(m[2] / m[1])
+    # _m = expr.T.groupby("timepoint").mean().T / expr.T.groupby("timepoint").std().T
+    # _fc = np.log2(_m[2] / _m[1])
+
+    # fig, axis = plt.subplots(1, 2, figsize=(2 * 4, 4))
+    # axis[0].scatter(m.mean(axis=1), fc, s=2, alpha=0.2, rasterized=True)
+    # axis[1].scatter(np.log2(1 + _m.mean(axis=1)), _fc, s=2, alpha=0.2, rasterized=True)
+    # sns.despine(fig)
+    # fig.savefig("landau_expression.ma_plot.svg", dpi=300, bbox_inches="tight")
+
+
+    # # compare with BSF
+    # expr_bsf = pd.read_table(os.path.join("results", "gene_exp.diff")).drop(['test_id', 'gene_id'], axis=1)
+    # e = expr_bsf['gene'].str.split(",").apply(pd.Series).stack()
+    # e = e.reset_index(level=1, drop=True).to_frame(name="gene").join(expr_bsf['log2(fold_change)'])
+    # bsf = e.groupby("gene").mean()
+
+    # # compare with deseq
+    # expr_deseq = pd.read_csv(
+    #     os.path.join("results", "cll-ibrutinib_AKH-RNA.expression_counts.gene_level.quantile_normalized.log2_tpm.annotated_metadata.csv"),
+    #     index_col=0, header=range(22))
+    # expr_deseq -= expr_deseq.min().min()
+    # m_deseq = expr_deseq.T.groupby("timepoint_name").mean().T
+    # fc_deseq = np.log2(m_deseq['after_Ibrutinib'] / m_deseq['before_Ibrutinib'])
+    # _m_deseq = expr_deseq.T.groupby("timepoint_name").mean().T / expr_deseq.T.groupby("timepoint_name").std().T
+    # _fc_deseq = np.log2(_m_deseq['after_Ibrutinib'] / _m_deseq['before_Ibrutinib'])
+
+    # fig, axis = plt.subplots(1, 2, figsize=(2 * 4, 4))
+    # axis[0].scatter(m_deseq.mean(axis=1), fc_deseq, s=2, alpha=0.2, rasterized=True)
+    # axis[1].scatter(np.log2(1 + _m_deseq.mean(axis=1)), _fc_deseq, s=2, alpha=0.2, rasterized=True)
+    # sns.despine(fig)
+    # fig.savefig("deseq_expression.ma_plot.svg", dpi=300, bbox_inches="tight")
+
+
+    # fc.name = 'landau'
+    # _fc.name = 'landau_std'
+    # fc_deseq.name = 'deseq'
+    # _fc_deseq.name = 'deseq_std'
+    # atac_fc_g.name = 'atac'
+    # atac_fc_g_std.name = 'atac_g'
+    # _atac_fc_g.name = 'atac_std'
+    # _atac_fc_g_std.name = 'atac_std_g'
+    # p = (bsf.squeeze().to_frame(name="bsf")
+    #     .join(fc).join(_fc)
+    #     .join(fc_deseq).join(_fc_deseq)
+    #     .join(atac_fc_g).join(atac_fc_g_std).join(_atac_fc_g).join(_atac_fc_g_std))
+
+
+
+    # # correlate means
+    # atac = pd.read_csv(
+    #     os.path.join("results", "cll-ibrutinib_AKH.accessibility.annotated_metadata.csv"),
+    #     index_col=0, header=range(24))
+    # atac -= atac.min().min()
+    # atac_g = atac.join(atac_g_annot).groupby('gene_name').mean().mean(axis=1)
+    # expr_g = expr.mean(axis=1)
+    # expr_g.name = "rna"
+    # p = atac_g.to_frame(name="atac").join(expr_g)
+
+    # fig, axis = plt.subplots(1, 1, figsize=(1 * 4, 4))
+    # axis.scatter(p['atac'], p['rna'], s=2, alpha=0.2, rasterized=True)
+    # axis.set_xlabel("ATAC-seq")
+    # axis.set_ylabel("RNA-seq (Landau)")
+    # axis.text(3, 0, s="Pearson r={}".format(p.corr('pearson').loc['rna', 'atac']))
+    # axis.text(3, 1, s="Spearman r={}".format(p.corr('spearman').loc['rna', 'atac']))
+    # # axis[1].scatter(np.log2(1 + _m_deseq.mean(axis=1)), _fc_deseq, s=2, alpha=0.2, rasterized=True)
+    # sns.despine(fig)
+    # fig.savefig("correlation.accessibility_expression.scatter.svg", dpi=300, bbox_inches="tight")
+
+
+    grid = sns.lmplot(data=p, x='atac', y='rna', scatter_kws={"alpha": 0.5, "s": 3, "rasterized": True})
+    fig.axes[0].set_xlabel("ATAC-seq")
+    fig.axes[0].set_ylabel("RNA-seq")
+    fig.axes[0].text(3, 0, s="Pearson r={}".format(p.corr('pearson').loc['rna', 'atac']))
+    fig.axes[0].text(3, 1, s="Spearman r={}".format(p.corr('spearman').loc['rna', 'atac']))
+    sns.despine(grid.fig)
+    grid.fig.savefig("correlation.accessibility_expression.lmplot.svg", dpi=300, bbox_inches="tight")
 
 
 def add_args(parser):
@@ -5995,15 +6768,17 @@ def main():
         output_suffix="interaction"
     )
 
-    # analysis.sites = pybedtools.BedTool(os.path.join(analysis.results_dir, analysis.name + "_peak_set.bed"))
-    # analysis.support = pd.read_csv(os.path.join(analysis.results_dir, analysis.name + "_peaks.support.csv"))
+    analysis.sites = pybedtools.BedTool(os.path.join(analysis.results_dir, analysis.name + "_peak_set.bed"))
+    analysis.support = pd.read_csv(os.path.join(analysis.results_dir, analysis.name + "_peaks.support.csv"))
     # analysis.coverage = pd.read_csv(os.path.join(analysis.results_dir, analysis.name + "_peaks.raw_coverage.csv"), index_col=0)
-    # analysis.gene_annotation = pd.read_csv(os.path.join(analysis.results_dir, analysis.name + "_peaks.gene_annotation.csv"))
-    # analysis.closest_tss_distances = pickle.load(open(os.path.join(analysis.results_dir, analysis.name + "_peaks.closest_tss_distances.pickle"), "rb"))
-    # analysis.region_annotation = pd.read_csv(os.path.join(analysis.results_dir, analysis.name + "_peaks.region_annotation.csv"))
-    # analysis.region_annotation_b = pd.read_csv(os.path.join(analysis.results_dir, analysis.name + "_peaks.region_annotation_background.csv"))
-    # analysis.chrom_state_annotation = pd.read_csv(os.path.join(analysis.results_dir, analysis.name + "_peaks.chromatin_state.csv"))
-    # analysis.chrom_state_annotation_b = pd.read_csv(os.path.join(analysis.results_dir, analysis.name + "_peaks.chromatin_state_background.csv"))
+    analysis.gene_annotation = pd.read_csv(os.path.join(analysis.results_dir, analysis.name + "_peaks.gene_annotation.csv"))
+    analysis.closest_tss_distances = pickle.load(open(os.path.join(analysis.results_dir, analysis.name + "_peaks.closest_tss_distances.pickle"), "rb"))
+    analysis.region_annotation = pd.read_csv(os.path.join(analysis.results_dir, analysis.name + "_peaks.region_annotation.csv"))
+    analysis.region_annotation_b = pd.read_csv(os.path.join(analysis.results_dir, analysis.name + "_peaks.region_annotation_background.csv"))
+    analysis.chrom_state_annotation = pd.read_csv(os.path.join(analysis.results_dir, analysis.name + "_peaks.chromatin_state.csv"))
+    analysis.chrom_state_annotation_b = pd.read_csv(os.path.join(analysis.results_dir, analysis.name + "_peaks.chromatin_state_background.csv"))
+
+    analysis.accessibility = pd.read_csv(os.path.join(analysis.results_dir, analysis.name + ".accessibility.annotated_metadata.csv"), header=range(len(sample_attributes) + 3), index_col=0)
 
     #
 
@@ -6045,6 +6820,234 @@ def main():
 
     # pathway-based
     rna_to_pathway(analysis)
+
+
+
+def revision_patients():
+    from looper.models import Project
+    from ngs_toolkit.atacseq import ATACSeqAnalysis
+    from ngs_toolkit.general import unsupervised_analysis
+    from scipy.stats import zscore
+
+    prj = Project(os.path.join("metadata", "project_config.revision.yaml"))
+    for sample in prj.samples:
+        sample.filtered = os.path.join(
+            sample.paths.sample_root, "mapped", sample.name + ".trimmed.bowtie2.filtered.bam")
+
+    analysis = ATACSeqAnalysis(name="cll-ibrutinib.revision", prj=prj, samples=[s for s in prj.samples if s.library == "ATAC-seq"])
+    sample_attributes = ["sample_name", "patient_id", "sample_id", "timepoint_name", "timepoint", "patient_gender", "ighv_mutation_status"]
+    group_attributes = ["patient_id", "timepoint_name", "timepoint", "patient_gender", "ighv_mutation_status"]
+    analysis.sites = pybedtools.BedTool(os.path.join("results", "cll-ibrutinib_AKH_peak_set.bed"))
+
+    # Get samples from CLL umbrella project
+    for sample in [s for s in analysis.samples if s.old_sample_name != ""]:
+        print(sample.name)
+        if not os.path.exists(os.path.join("data", sample.name)):
+            os.system("cp -r {} {}".format(
+                os.path.join("~/projects", "cll-patients", "pipeline_output/", sample.old_sample_name),
+                os.path.join("data", sample.name)))
+
+            os.system("find {} -name '{}*' -exec rename {} {} {{}} \;".format(
+                "data", sample.old_sample_name, sample.old_sample_name, sample.name))
+
+    # Get count matrix for new samples
+    c = analysis.measure_coverage(
+        analysis,
+        samples=[s for s in analysis.samples if s.ibrutinib_cohort == "2"],
+        output_file=os.path.join("results", "cll-ibrutinib.revision_peaks.raw_coverage.only_revision_samples.csv"))
+    # join with previous
+    cov = pd.read_csv(os.path.join("results", "cll-ibrutinib_CLL_peaks.raw_coverage.csv"), index_col=0)
+    cov = cov[[s for s in cov.columns if s in [ss.name for ss in analysis.samples]]]
+    analysis.coverage = cov.join(c)
+    analysis.coverage.to_csv(os.path.join(analysis.results_dir, analysis.name + "_peaks.raw_coverage.csv"), index=True)
+    analysis.normalize(method="gc_content")
+    analysis.annotate_with_sample_metadata(quant_matrix="coverage_gc_corrected", attributes=sample_attributes, numerical_attributes=["timepoint"])
+
+    # Unsupervised
+    unsupervised_analysis(
+        analysis, data_type="ATAC-seq", quant_matrix="accessibility",
+        samples=[s for s in analysis.samples if s.patient_id not in ["CLL16"]],
+        attributes_to_plot=group_attributes, test_pc_association=False,
+        plot_prefix="unsupervised_analysis.revision",
+        output_dir=os.path.join(analysis.results_dir, "unsupervised_analysis.revision"))
+
+    # Observe previous treatment signature
+    diff = pd.read_csv(os.path.join(
+        "results", "cll-ibrutinib_AKH.ibrutinib_treatment",
+        "cll-ibrutinib_AKH.ibrutinib_treatment.timepoint_name.after_Ibrutinib-before_Ibrutinib.csv"), index_col=0)
+    sig = diff[diff['padj'] < 0.01]
+
+    acce = analysis.accessibility.sort_index(axis=1, level=['timepoint_name', 'patient_id'])
+    grid1 = sns.clustermap(
+        acce.loc[sig.index, :].T,
+        z_score=1, robust=True, xticklabels=False, yticklabels=acce.columns.get_level_values("sample_name"),
+        rasterized=True, cmap="RdBu_r", cbar_kws={"label": "Chromatin accessibility\n(Z-score)"})
+    grid1.ax_heatmap.set_yticklabels(grid1.ax_heatmap.get_yticklabels(), rotation=0)
+    grid1.ax_heatmap.set_ylabel("Samples")
+    grid1.savefig(os.path.join(analysis.results_dir, analysis.name + ".ibrutinib_signature.clustered.svg"), bbox_inches="tight", dpi=300)
+
+    grid1 = sns.clustermap(
+        acce.loc[sig.index, :].T,
+        row_cluster=False,
+        z_score=1, robust=True, xticklabels=False, yticklabels=acce.columns.get_level_values("sample_name"),
+        rasterized=True, cmap="RdBu_r", cbar_kws={"label": "Chromatin accessibility\n(Z-score)"})
+    grid1.ax_heatmap.set_yticklabels(grid1.ax_heatmap.get_yticklabels(), rotation=0)
+    grid1.ax_heatmap.set_ylabel("Samples")
+    grid1.savefig(os.path.join(analysis.results_dir, analysis.name + ".ibrutinib_signature.sorted.svg"), bbox_inches="tight", dpi=300)
+
+    acce_z = acce.loc[sig.index, :].apply(zscore, axis=1)
+
+    p = acce_z.loc[sig.index, ~acce_z.columns.get_level_values("sample_name").str.contains('CLL18|CLL19|CLL22')]
+    p = p.sort_index(axis=1, level=['timepoint_name', 'patient_id'])
+    grid = sns.clustermap(
+        p.T,
+        row_cluster=False,
+        robust=True, xticklabels=False, yticklabels=p.columns.get_level_values("sample_name"),
+        rasterized=True, cmap="RdBu_r", cbar_kws={"label": "Chromatin accessibility\n(Z-score)"})
+    grid.ax_heatmap.set_yticklabels(grid.ax_heatmap.get_yticklabels(), rotation=0)
+    grid.ax_heatmap.set_ylabel("Samples")
+    grid.savefig(os.path.join(analysis.results_dir, analysis.name + ".ibrutinib_signature.initial_samples.sorted.svg"), bbox_inches="tight", dpi=300)
+
+    p = acce_z.iloc[grid.dendrogram_col.reordered_ind, :]
+    p = p.loc[:, (
+            p.columns.get_level_values("sample_name").str.contains('_CLL18_|_CLL19_|_CLL22_') &
+            ~p.columns.get_level_values("sample_name").str.contains('pre|post'))]
+    p = p.sort_index(axis=1, level=['timepoint_name', 'patient_id'])
+    grid2 = sns.clustermap(
+        p.T,
+        figsize=(grid1.fig.get_size_inches()[0], 4),
+        row_cluster=False, col_cluster=False,
+        robust=True, xticklabels=False, yticklabels=p.columns.get_level_values("sample_name"),
+        rasterized=True, cmap="RdBu_r", cbar_kws={"label": "Chromatin accessibility\n(Z-score)"})
+    grid2.ax_heatmap.set_yticklabels(grid2.ax_heatmap.get_yticklabels(), rotation=0)
+    grid2.ax_heatmap.set_ylabel("Samples")
+    grid2.savefig(os.path.join(analysis.results_dir, analysis.name + ".ibrutinib_signature.revision_samples.sorted_time.svg"), bbox_inches="tight", dpi=300)
+
+    p = acce_z.iloc[grid.dendrogram_col.reordered_ind, :]
+    p = p.loc[:, (
+        p.columns.get_level_values("sample_name").str.contains('_CLL18_|_CLL19_|_CLL22_') &
+        ~p.columns.get_level_values("sample_name").str.contains('pre|post'))]
+    p = p.sort_index(axis=1, level=["patient_id", "timepoint"])
+    grid2 = sns.clustermap(
+        p.T,
+        figsize=(grid1.fig.get_size_inches()[0], 4),
+        row_cluster=False, col_cluster=False,
+        robust=True, xticklabels=False, yticklabels=p.columns.get_level_values("sample_name"),
+        rasterized=True, cmap="RdBu_r", cbar_kws={"label": "Chromatin accessibility\n(Z-score)"})
+    grid2.ax_heatmap.set_yticklabels(grid2.ax_heatmap.get_yticklabels(), rotation=0)
+    grid2.ax_heatmap.set_ylabel("Samples")
+    grid2.savefig(os.path.join(analysis.results_dir, analysis.name + ".ibrutinib_signature.revision_samples.sorted_patient.svg"), bbox_inches="tight", dpi=300)
+
+
+    # Run pathway-level analysis
+    pathway_genes = pickle.load(open(os.path.join("metadata", "pathway_gene_annotation_kegg.pickle"), "rb"))
+
+    # Get accessibility for each regulatory element assigned to each gene in each pathway
+    # Reduce values per gene
+    # Reduce values per pathway
+    sel_samples = [s for s in analysis.samples]
+    cov = analysis.accessibility.loc[:, [s.name for s in sel_samples]]
+    chrom_annot = pd.read_csv(os.path.join("results", "cll-ibrutinib_CLL_peaks.coverage_qnorm.log2.annotated.csv"), index_col=0)
+    path_cov = pd.DataFrame()
+    path_cov.columns.name = 'kegg_pathway_name'
+    for pathway in pathway_genes.keys():
+        print(pathway)
+        # mean of all reg. elements of all genes
+        index = chrom_annot.loc[(chrom_annot['gene_name'].isin(pathway_genes[pathway])), 'gene_name'].index
+        q = cov.ix[index]
+        path_cov[pathway] = (q[[s.name for s in sel_samples]].mean(axis=0) / cov[[s.name for s in sel_samples]].sum(axis=0)) * 1e6
+    path_cov = path_cov.T.dropna().T
+
+    path_cov_z = path_cov.apply(zscore, axis=0)
+    path_cov.T.to_csv(os.path.join(analysis.results_dir, analysis.name + ".pathway.sample_accessibility.csv"))
+    path_cov_z.T.to_csv(os.path.join(analysis.results_dir, analysis.name + ".pathway.sample_accessibility.z_score.csv"))
+    path_cov = pd.read_csv(os.path.join(analysis.results_dir, analysis.name + ".pathway.sample_accessibility.csv"), index_col=0, header=range(24)).T
+    path_cov_z = pd.read_csv(os.path.join(analysis.results_dir, analysis.name + ".pathway.sample_accessibility.z_score.csv"), index_col=0, header=range(24)).T
+
+    # Visualize
+    # clustered
+    g = sns.clustermap(
+        path_cov_z, figsize=(30, 8), rasterized=True,
+        xticklabels=True, yticklabels=path_cov_z.index.get_level_values("sample_name"), cmap="RdBu_r")
+    g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0, fontsize=6)
+    g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90, fontsize=6)
+    g.fig.savefig(os.path.join(analysis.results_dir, analysis.name + ".pathway.mean_accessibility.svg"), bbox_inches="tight", dpi=300)
+
+    # ordered
+    p = path_cov_z.sort_index(level=['patient_id', 'timepoint'])
+    g = sns.clustermap(
+        p.reset_index(drop=True), figsize=(30, 8), rasterized=True,
+        xticklabels=True, yticklabels=p.index.get_level_values("sample_name"), col_cluster=True, row_cluster=False, cmap="RdBu_r")
+    g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0, fontsize=6)
+    g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90, fontsize=6)
+    g.fig.savefig(os.path.join(analysis.results_dir, analysis.name + ".pathway.mean_accessibility.ordered.svg"), bbox_inches="tight", dpi=300)
+
+    # sorted
+    p = path_cov[path_cov.sum(axis=0).sort_values().index]
+    p = p.ix[p.sum(axis=1).sort_values().index]
+    g = sns.clustermap(
+        p, figsize=(30, 8), rasterized=True,
+        xticklabels=True, yticklabels=p.index.get_level_values("sample_name"), col_cluster=False, row_cluster=False, cmap="RdBu_r")
+    g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0, fontsize=6)
+    g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90, fontsize=6)
+    g.fig.savefig(os.path.join(analysis.results_dir, analysis.name + ".pathway.mean_accessibility.sorted.svg"), bbox_inches="tight", dpi=300)
+
+    # For specific pathways only
+
+    sel_pathways = ['FoxO signaling pathway', 'PI3K-Akt signaling pathway', 'NF-kappa B signaling pathway', 'TNF signaling pathway', 'TGF-beta signaling pathway', "Autophagy", "Proteasome"]
+
+    path_cov_z2 = path_cov_z.loc[:, path_cov_z.columns.isin(sel_pathways)]
+
+    # clustered
+    g = sns.clustermap(
+        path_cov_z2, figsize=(30, 8), rasterized=True, square=True,
+        xticklabels=True, yticklabels=path_cov_z.index.get_level_values("sample_name"), cmap="RdBu_r")
+    g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0, fontsize=6)
+    g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90, fontsize=6)
+    g.fig.savefig(os.path.join(analysis.results_dir, analysis.name + ".pathway.mean_accessibility.select_pathways.svg"), bbox_inches="tight", dpi=300)
+
+    # ordered
+    p = path_cov_z2.sort_index(level=['patient_id', 'timepoint'])
+    g = sns.clustermap(
+        p.reset_index(drop=True), figsize=(30, 8), rasterized=True, square=True,
+        xticklabels=True, yticklabels=p.index.get_level_values("sample_name"), col_cluster=True, row_cluster=False, cmap="RdBu_r")
+    g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0, fontsize=6)
+    g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90, fontsize=6)
+    g.fig.savefig(os.path.join(analysis.results_dir, analysis.name + ".pathway.mean_accessibility.select_pathways.ordered.svg"), bbox_inches="tight", dpi=300)
+
+    # sorted
+    p = path_cov[path_cov.sum(axis=0).sort_values().index]
+    p = p.ix[p.sum(axis=1).sort_values().index]
+    g = sns.clustermap(
+        p, figsize=(30, 8), rasterized=True,
+        xticklabels=True, yticklabels=p.index.get_level_values("sample_name"), col_cluster=False, row_cluster=False, cmap="RdBu_r")
+    g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0, fontsize=6)
+    g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90, fontsize=6)
+    g.fig.savefig(os.path.join(analysis.results_dir, analysis.name + ".pathway.mean_accessibility.sorted.svg"), bbox_inches="tight", dpi=300)
+
+
+
+    # For new patients only
+
+    for patient in ["CLL18", "CLL19", "CLL22"]:
+
+        ss = [s.name for s in analysis.samples if s.patient_id == patient and s.ibrutinib_cohort == "2"]
+
+        # ordered
+        p = path_cov_z.loc[ss, :]
+        g = sns.clustermap(
+            p.reset_index(drop=True), figsize=(24, 4),
+            xticklabels=True, yticklabels=p.index.get_level_values("sample_name"), col_cluster=True, row_cluster=False, cmap="RdBu_r")
+        g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0, fontsize=6)
+        g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90, fontsize=6)
+        g.fig.savefig(os.path.join(analysis.results_dir, analysis.name + ".pathway.mean_accessibility.{}.ordered.svg".format(patient)), bbox_inches="tight", dpi=300)
+
+        g = sns.clustermap(
+            p.reset_index(drop=True), figsize=(24, 4), z_score=1,
+            xticklabels=True, yticklabels=p.index.get_level_values("sample_name"), col_cluster=True, row_cluster=False, cmap="RdBu_r")
+        g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0, fontsize=6)
+        g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=90, fontsize=6)
+        g.fig.savefig(os.path.join(analysis.results_dir, analysis.name + ".pathway.mean_accessibility.{}.ordered.z_score.svg".format(patient)), bbox_inches="tight", dpi=300)
 
 
 if __name__ == '__main__':

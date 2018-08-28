@@ -104,6 +104,14 @@ for patient in patients:
 
 # Concentration curves with patient means
 df2 = df.groupby(['drug_name', 'drug_concentration', 'ibrutinib_concentration'])["viability"].mean().reset_index()
+df2 = df2.join(df.groupby(['drug_name', 'drug_concentration', 'ibrutinib_concentration'])["viability"].apply(scipy.stats.sem).reset_index()['viability'], rsuffix="_sem")
+
+df2['upper_sem'] = df2['viability'] + df2['viability_sem'] / 2.
+df2['lower_sem'] = df2['viability'] - df2['viability_sem'] / 2.
+
+# df2 = pd.melt(df, id_vars=['patient_id', 'drug_name', 'drug_concentration', 'ibrutinib_concentration'], value_vars="viability", value_name='viability')
+# g = sns.factorplot(data=df2, x="drug_concentration", y="viability", col="drug_name", col_wrap=3, sharex=False)
+
 n = int(np.ceil(np.sqrt(len(drugs))))
 fig, axis = plt.subplots(n, n, figsize=(n * 3.5, n * 3.5), sharex=False, sharey=False)
 fig.text(0.5, 1.02, "Patient means", fontsize=14, ha="center")
@@ -113,9 +121,15 @@ for i, drug_name in enumerate(drugs):
         df3 = df2.loc[
             (df2["drug_name"] == drug_name) &
             (df2["ibrutinib_concentration"] == ibrutinib_concentration), :]
+
+        # mean
         ax.plot(df3['drug_concentration'], df3["viability"],
             label="drug + {}nM Ibrutinib".format(ibrutinib_concentration),
             linestyle="-", marker="o", zorder=i)
+        # stderror bars
+        for _, row in df3.iterrows():
+            ax.plot((row['drug_concentration'], row['drug_concentration']), (row["lower_sem"], row["upper_sem"]),
+                linewidth=1, color="black")
 
     # Ibrutinib alone
     df4 = df2.loc[
@@ -124,6 +138,10 @@ for i, drug_name in enumerate(drugs):
     df4 = df4[df4['ibrutinib_concentration'] <= df3['drug_concentration'].max()]
     ax.plot(df4['ibrutinib_concentration'], df4["viability"], label="Ibrutinib alone",
         linestyle="--", marker="o", color="black", alpha=0.75, zorder=0)
+    # stderror bars
+    for _, row in df4.iterrows():
+        ax.plot((row['drug_concentration'], row['drug_concentration']), (row["lower_sem"], row["upper_sem"]),
+            linewidth=1, color="black")
 
     if df3['drug_concentration'].max() >= 100:
         ax.set_xscale("symlog", basex=10, linthreshx=5)
@@ -137,6 +155,41 @@ for i, drug_name in enumerate(drugs):
 sns.despine(fig)
 fig.tight_layout()
 fig.savefig(os.path.join("results", "drug_synergies.curves.all_patients_mean.svg"), dpi=300, bbox_inches="tight")
+
+
+# Only ibrutinib now
+n = 1
+drug_name = "Ibrutinib"
+
+df2 = df[df['drug_concentration'] == 0]
+df2 = df2.groupby(['ibrutinib_concentration'])["viability"].mean().reset_index()
+df2 = df2.join(df.groupby(['ibrutinib_concentration'])["viability"].apply(scipy.stats.sem).reset_index()['viability'], rsuffix="_sem")
+df2['upper_sem'] = df2['viability'] + df2['viability_sem'] / 2.
+df2['lower_sem'] = df2['viability'] - df2['viability_sem'] / 2.
+
+
+fig, axis = plt.subplots(n, n, figsize=(n * 3.5, n * 3.5), sharex=False, sharey=False)
+fig.text(0.5, 1.02, "Patient means", fontsize=14, ha="center")
+# mean
+axis.plot(df2['ibrutinib_concentration'], df2["viability"],
+    label="drug + {}nM Ibrutinib".format(ibrutinib_concentration),
+    linestyle="-", marker="o", zorder=-1)
+# stderror bars
+for _, row in df2.iterrows():
+    axis.plot((row['ibrutinib_concentration'], row['ibrutinib_concentration']), (row["lower_sem"], row["upper_sem"]),
+            linewidth=1, color="black")
+if df2['ibrutinib_concentration'].max() >= 100:
+    axis.set_xscale("symlog", basex=10, linthreshx=5)
+axis.set_xlabel("Concentration (nM)")
+axis.set_ylabel("% Viability")
+axis.set_ylim((0, axis.get_ylim()[1]))
+axis.set_title(drug_name)
+axis.legend()
+sns.despine(fig)
+fig.tight_layout()
+fig.savefig(os.path.join("results", "drug_synergies.curves.all_patients_mean.ibrutinib_alone.svg"), dpi=300, bbox_inches="tight")
+
+
 
 
 # Synnergy plots
