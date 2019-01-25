@@ -5,8 +5,7 @@ import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 import seaborn as sns
-
-from looper.models import Project
+import scipy
 
 
 # Set settings
@@ -18,21 +17,19 @@ matplotlib.rcParams['xtick.direction'] = 'out'
 matplotlib.rcParams['ytick.direction'] = 'out'
 matplotlib.rc('text', usetex=False)
 
-import sys
-sys.setrecursionlimit(10000)
 
 c = {
     "drug_alone": 0,
     "drug_plus_10nM_Ibrut": 10,
     "drug_plus_100nM_Ibrut": 100,
     "drug_plus_500nM_Ibrut": 500,
-    "drug_plus_1µM_Ibrut": 1000,}
+    "drug_plus_1µM_Ibrut": 1000}
 
 df = pd.read_csv(os.path.join("data", "drug_combinations.coculture.melted.csv"))
 df = df.sort_values(['drug', "patient_id", "ibrutinib_concentration_nM", "drug_concentration_nM"])
 
 # Let's cap the drug concentrations to the maximum based on known potency
-df = df[df['ibrutinib_concentration_nM'] < 1000] # Ibrutinib < 1000uM
+df = df[df['ibrutinib_concentration_nM'] < 1000]  # Ibrutinib < 1000uM
 # df = df[~((df['drug'] == "Navitoclax") & (df['drug_concentration_nM'] > 500))] # Navitoclax < 500uM
 # df = df[~((df['drug'] == "Venetoclax") & (df['drug_concentration_nM'] > 100))] # Navitoclax < 500uM
 
@@ -63,7 +60,8 @@ for patient in patients:
                 (df["patient_id"] == patient) &
                 (df["drug"] == drug) &
                 (df["ibrutinib_concentration_nM"] == ibrutinib_concentration), :]
-            ax.plot(df2['drug_concentration_nM'], df2["viability"],
+            ax.plot(
+                df2['drug_concentration_nM'], df2["viability"],
             label="drug + {}nM Ibrutinib".format(ibrutinib_concentration),
             linestyle="-", marker="o", zorder=i)
 
@@ -76,7 +74,8 @@ for patient in patients:
             (df["drug"] == drug) &
             (df["drug_concentration_nM"] == 0), :]
         df3 = df3[df3['ibrutinib_concentration_nM'] <= df2['drug_concentration_nM'].max()]
-        ax.plot(df3['ibrutinib_concentration_nM'], df3["viability"], label="Ibrutinib alone",
+        ax.plot(
+            df3['ibrutinib_concentration_nM'], df3["viability"], label="Ibrutinib alone",
             linestyle="--", marker="o", color="black", alpha=0.75, zorder=0)
 
         ax.set_xlabel("Concentration (nM)")
@@ -116,12 +115,14 @@ for log, scale in [(True, "log"), (False, "linear")]:
                 (df2["ibrutinib_concentration_nM"] == ibrutinib_concentration), :]
 
             # mean
-            ax.plot(df3['drug_concentration_nM'], df3["viability"],
+            ax.plot(
+                df3['drug_concentration_nM'], df3["viability"],
                 label="drug + {}nM Ibrutinib".format(ibrutinib_concentration),
                 linestyle="-", marker="o", zorder=i)
             # stderror bars
             for _, row in df3.iterrows():
-                ax.plot((row['drug_concentration_nM'], row['drug_concentration_nM']), (row["lower_sem"], row["upper_sem"]),
+                ax.plot(
+                    (row['drug_concentration_nM'], row['drug_concentration_nM']), (row["lower_sem"], row["upper_sem"]),
                     linewidth=1, color="black")
 
         # Ibrutinib alone
@@ -129,11 +130,13 @@ for log, scale in [(True, "log"), (False, "linear")]:
             (df2["drug"] == drug) &
             (df2["drug_concentration_nM"] == 0), :]
         df4 = df4[df4['ibrutinib_concentration_nM'] <= df3['drug_concentration_nM'].max()]
-        ax.plot(df4['ibrutinib_concentration_nM'], df4["viability"], label="Ibrutinib alone",
+        ax.plot(
+            df4['ibrutinib_concentration_nM'], df4["viability"], label="Ibrutinib alone",
             linestyle="--", marker="o", color="black", alpha=0.75, zorder=0)
         # stderror bars
         for _, row in df4.iterrows():
-            ax.plot((row['drug_concentration_nM'], row['drug_concentration_nM']), (row["lower_sem"], row["upper_sem"]),
+            ax.plot(
+                (row['drug_concentration_nM'], row['drug_concentration_nM']), (row["lower_sem"], row["upper_sem"]),
                 linewidth=1, color="black")
 
         if log:
@@ -183,7 +186,7 @@ df2['lower_sem'] = df2['viability'] - df2['viability_sem'] / 2.
 # Plot concentration curves
 ibrutinib_concentrations = df2['ibrutinib_concentration_nM'].drop_duplicates()
 patients = df['patient_id'].drop_duplicates()
-drugs =  ["Fludarabine"] # df['drug'].drop_duplicates()
+drugs = ["Fludarabine"]  # df['drug'].drop_duplicates()
 
 
 for log, scale in [(True, "log"), (False, "linear")]:
@@ -198,12 +201,14 @@ for log, scale in [(True, "log"), (False, "linear")]:
                 (df2["ibrutinib_concentration_nM"] == ibrutinib_concentration), :]
 
             # mean
-            ax.plot(df3['drug_concentration_nM'], df3["viability"],
+            ax.plot(
+                df3['drug_concentration_nM'], df3["viability"],
                 label="drug + {}nM Ibrutinib".format(ibrutinib_concentration),
                 linestyle="-", marker="o", zorder=i)
             # stderror bars
             for _, row in df3.iterrows():
-                ax.plot((row['drug_concentration_nM'], row['drug_concentration_nM']), (row["lower_sem"], row["upper_sem"]),
+                ax.plot(
+                    (row['drug_concentration_nM'], row['drug_concentration_nM']), (row["lower_sem"], row["upper_sem"]),
                     linewidth=1, color="black")
 
         # Ibrutinib alone
@@ -211,11 +216,13 @@ for log, scale in [(True, "log"), (False, "linear")]:
             (df2["drug"] == drug) &
             (df2["drug_concentration_nM"] == 0), :]
         df4 = df4[df4['ibrutinib_concentration_nM'] <= df3['drug_concentration_nM'].max()]
-        ax.plot(df4['ibrutinib_concentration_nM'], df4["viability"], label="Ibrutinib alone",
+        ax.plot(
+            df4['ibrutinib_concentration_nM'], df4["viability"], label="Ibrutinib alone",
             linestyle="--", marker="o", color="black", alpha=0.75, zorder=0)
         # stderror bars
         for _, row in df4.iterrows():
-            ax.plot((row['drug_concentration_nM'], row['drug_concentration_nM']), (row["lower_sem"], row["upper_sem"]),
+            ax.plot(
+                (row['drug_concentration_nM'], row['drug_concentration_nM']), (row["lower_sem"], row["upper_sem"]),
                 linewidth=1, color="black")
 
         if log:
@@ -246,7 +253,7 @@ for group, i in df3.groupby(['drug', 'drug_concentration_nM', 'ibrutinib_concent
 to_plot = df3
 
 ibrutinib_concentrations = to_plot['ibrutinib_concentration_nM'].drop_duplicates()
-drugs =  ["Fludarabine"] # to_plot['drug'].drop_duplicates()
+drugs = ["Fludarabine"] # to_plot['drug'].drop_duplicates()
 
 for log, scale in [(True, "log"), (False, "linear")]:
     n = int(np.ceil(np.sqrt(len(drugs))))
@@ -260,12 +267,14 @@ for log, scale in [(True, "log"), (False, "linear")]:
                 (to_plot["ibrutinib_concentration_nM"] == ibrutinib_concentration), :]
 
             # mean
-            ax.plot(p['drug_concentration_nM'], p["viability"],
+            ax.plot(
+                p['drug_concentration_nM'], p["viability"],
                 label="drug + {}nM Ibrutinib".format(ibrutinib_concentration),
                 linestyle="-", marker="o", zorder=i)
             # stderror bars
             for _, row in p.iterrows():
-                ax.plot((row['drug_concentration_nM'], row['drug_concentration_nM']), (row["lower_sem"], row["upper_sem"]),
+                ax.plot(
+                    (row['drug_concentration_nM'], row['drug_concentration_nM']), (row["lower_sem"], row["upper_sem"]),
                     linewidth=1, color="black")
 
         # Ibrutinib alone
@@ -273,11 +282,13 @@ for log, scale in [(True, "log"), (False, "linear")]:
             (to_plot["drug"] == drug) &
             (to_plot["drug_concentration_nM"] == 0), :]
         pp = pp[pp['ibrutinib_concentration_nM'] <= p['drug_concentration_nM'].max()]
-        ax.plot(pp['ibrutinib_concentration_nM'], pp["viability"], label="Ibrutinib alone",
+        ax.plot(
+            pp['ibrutinib_concentration_nM'], pp["viability"], label="Ibrutinib alone",
             linestyle="--", marker="o", color="black", alpha=0.75, zorder=0)
         # stderror bars
         for _, row in pp.iterrows():
-            ax.plot((row['drug_concentration_nM'], row['drug_concentration_nM']), (row["lower_sem"], row["upper_sem"]),
+            ax.plot(
+                (row['drug_concentration_nM'], row['drug_concentration_nM']), (row["lower_sem"], row["upper_sem"]),
                 linewidth=1, color="black")
 
         if log:
@@ -292,7 +303,9 @@ for log, scale in [(True, "log"), (False, "linear")]:
             ax.legend()
     sns.despine(fig)
     fig.tight_layout()
-    fig.savefig(os.path.join("results", "drug_combinations.20170816.curves.all_patients_mean.ibrutinib_normalized.{}.fludarabine_only.svg".format(scale)), dpi=300, bbox_inches="tight")
+    fig.savefig(
+        os.path.join("results", "drug_combinations.20170816.curves.all_patients_mean.ibrutinib_normalized.{}.fludarabine_only.svg".format(scale)),
+        dpi=300, bbox_inches="tight")
 
 
 # New values for Fludarabine, normalized to ibrutinib by Medhat
@@ -306,7 +319,7 @@ to_plot = to_plot.join(df.groupby(df.columns[1:-1].tolist())["viability"].apply(
 to_plot['upper_sem'] = to_plot['viability'] + to_plot['viability_sem'] / 2.
 to_plot['lower_sem'] = to_plot['viability'] - to_plot['viability_sem'] / 2.
 ibrutinib_concentrations = to_plot['ibrutinib_concentration_nM'].drop_duplicates()
-drugs =  ["Fludarabine"] # to_plot['drug'].drop_duplicates()
+drugs = ["Fludarabine"] # to_plot['drug'].drop_duplicates()
 
 for log, scale in [(True, "log"), (False, "linear")]:
     n = int(np.ceil(np.sqrt(len(drugs))))
@@ -320,12 +333,14 @@ for log, scale in [(True, "log"), (False, "linear")]:
                 (to_plot["ibrutinib_concentration_nM"] == ibrutinib_concentration), :]
 
             # mean
-            ax.plot(p['drug_concentration_nM'], p["viability"],
+            ax.plot(
+                p['drug_concentration_nM'], p["viability"],
                 label="drug + {}nM Ibrutinib".format(ibrutinib_concentration),
                 linestyle="-", marker="o", zorder=i)
             # stderror bars
             for _, row in p.iterrows():
-                ax.plot((row['drug_concentration_nM'], row['drug_concentration_nM']), (row["lower_sem"], row["upper_sem"]),
+                ax.plot(
+                    (row['drug_concentration_nM'], row['drug_concentration_nM']), (row["lower_sem"], row["upper_sem"]),
                     linewidth=1, color="black")
 
         # Ibrutinib alone
@@ -333,11 +348,13 @@ for log, scale in [(True, "log"), (False, "linear")]:
             (to_plot["drug"] == drug) &
             (to_plot["drug_concentration_nM"] == 0), :]
         pp = pp[pp['ibrutinib_concentration_nM'] <= p['drug_concentration_nM'].max()]
-        ax.plot(pp['ibrutinib_concentration_nM'], pp["viability"], label="Ibrutinib alone",
+        ax.plot(
+            pp['ibrutinib_concentration_nM'], pp["viability"], label="Ibrutinib alone",
             linestyle="--", marker="o", color="black", alpha=0.75, zorder=0)
         # stderror bars
         for _, row in pp.iterrows():
-            ax.plot((row['drug_concentration_nM'], row['drug_concentration_nM']), (row["lower_sem"], row["upper_sem"]),
+            ax.plot(
+                (row['drug_concentration_nM'], row['drug_concentration_nM']), (row["lower_sem"], row["upper_sem"]),
                 linewidth=1, color="black")
 
         if log:
@@ -352,5 +369,6 @@ for log, scale in [(True, "log"), (False, "linear")]:
             ax.legend()
     sns.despine(fig)
     fig.tight_layout()
-    fig.savefig(os.path.join("results", "drug_combinations.curves.all_patients_mean.ibrutinib_normalized.{}.fludarabine_only.medhat_values.20180817.svg".format(scale)), dpi=300, bbox_inches="tight")
-
+    fig.savefig(
+        os.path.join("results", "drug_combinations.curves.all_patients_mean.ibrutinib_normalized.{}.fludarabine_only.medhat_values.20180817.svg".format(scale)),
+        dpi=300, bbox_inches="tight")

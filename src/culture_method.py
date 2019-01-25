@@ -1,12 +1,9 @@
 
 import os
 import pandas as pd
-import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 import seaborn as sns
-
-from looper.models import Project
 
 
 # Set settings
@@ -52,51 +49,68 @@ for ax in grid.axes.flatten():
     ax.set_ylim((0, 100))
 sns.despine(grid.fig)
 grid.fig.tight_layout()
-grid.fig.savefig(os.path.join("results", "culture_method_comparison.factorplot.svg"), dpi=300, bbox_inches="tight")
+grid.fig.savefig(
+    os.path.join("results", "culture_method_comparison.factorplot.svg"),
+    dpi=300, bbox_inches="tight")
 
-grid = sns.factorplot(data=df[(~df['culture'].str.contains("alone")) & (df['variable'] == "All Ax+")], x="treatment", y="Apoptosis", hue="culture", sharex=False)
+grid = sns.factorplot(
+    data=df[(~df['culture'].str.contains("alone")) & (df['variable'] == "All Ax+")],
+    x="treatment", y="Apoptosis", hue="culture", sharex=False)
 for ax in grid.axes.flatten():
     ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
     ax.set_ylim((0, 100))
 sns.despine(grid.fig)
 grid.fig.tight_layout()
-grid.fig.savefig(os.path.join("results", "culture_method_comparison.killing.factorplot.svg"), dpi=300, bbox_inches="tight")
+grid.fig.savefig(
+    os.path.join("results", "culture_method_comparison.killing.factorplot.svg"),
+    dpi=300, bbox_inches="tight")
 
 
-grid = sns.factorplot(data=df[df['culture'].str.contains("alone")], x="treatment", y="Apoptosis", hue="variable", row="culture", sharex=False)
+grid = sns.factorplot(
+    data=df[df['culture'].str.contains("alone")],
+    x="treatment", y="Apoptosis", hue="variable", row="culture", sharex=False)
 for ax in grid.axes.flatten():
     ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
     ax.set_ylim((0, 100))
 sns.despine(grid.fig)
 grid.fig.tight_layout()
-grid.fig.savefig(os.path.join("results", "culture_method_comparison.alone.factorplot.svg"), dpi=300, bbox_inches="tight")
+grid.fig.savefig(
+    os.path.join("results", "culture_method_comparison.alone.factorplot.svg"),
+    dpi=300, bbox_inches="tight")
 
-grid = sns.factorplot(data=df[(df['culture'].str.contains("alone")) & (~df['variable'].str.endswith("-"))], x="treatment", y="Apoptosis", hue="variable", row="culture", sharex=False)
+grid = sns.factorplot(
+    data=df[(df['culture'].str.contains("alone")) & (~df['variable'].str.endswith("-"))],
+    x="treatment", y="Apoptosis", hue="variable", row="culture", sharex=False)
 for ax in grid.axes.flatten():
     ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
     ax.set_ylim((0, 20))
 sns.despine(grid.fig)
 grid.fig.tight_layout()
-grid.fig.savefig(os.path.join("results", "culture_method_comparison.alone.killing.factorplot.svg"), dpi=300, bbox_inches="tight")
-
+grid.fig.savefig(
+    os.path.join("results", "culture_method_comparison.alone.killing.factorplot.svg"),
+    dpi=300, bbox_inches="tight")
 
 
 fig, axis = plt.subplots(1, 1, figsize=(4, 1 * 4))
-sns.violinplot(data=df[(~df['culture'].str.contains("alone")) & (df['treatment'] == "Control")], x="variable", y="Apoptosis", hue="culture", ax=axis)
+sns.violinplot(
+    data=df[(~df['culture'].str.contains("alone")) & (df['treatment'] == "Control")],
+    x="variable", y="Apoptosis", hue="culture", ax=axis)
 sns.despine(fig)
 fig.tight_layout()
-fig.savefig(os.path.join("results", "culture_method_comparison.control_only.violinplot.svg"), dpi=300, bbox_inches="tight")
-
+fig.savefig(
+    os.path.join("results", "culture_method_comparison.control_only.violinplot.svg"),
+    dpi=300, bbox_inches="tight")
 
 df3 = df[
     (~df['culture'].str.contains("alone")) &
     (~df['treatment'].str.contains("1|10|100|1000")) &
-    (~df['treatment'].str.contains("\+"))]
+    (~df['treatment'].str.contains(r"\+"))]
 
 # grid = sns.FacetGrid(data=df3, row='variable', col=None, hue="treatment", col_wrap=None, sharex=True, sharey=False, hue_order=df3['treatment'].unique())
 # grid.map(sns.violinplot, "culture", "Apoptosis")
 # grid.map(sns.swarmplot, "culture", "Apoptosis")
-grid = sns.factorplot(data=df3, x="culture", y="Apoptosis", hue="treatment", row="variable",
+grid = sns.factorplot(
+    data=df3, x="culture", y="Apoptosis", hue="treatment", row="variable",
     sharey=False, order=['suspension', 'NKTert co-culture', 'pBMSC co-culture'], hue_order=df3['treatment'].unique())
 for ax in grid.axes.flatten():
     ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
@@ -104,5 +118,6 @@ grid.axes.flatten()[-1].set_ylim((0, 100))
 #grid.add_legend(title="Treatment")
 sns.despine(grid.fig)
 grid.fig.tight_layout()
-grid.fig.savefig(os.path.join("results", "culture_method_comparison.suspension&alone.factorplot.svg"), dpi=300, bbox_inches="tight")
-
+grid.fig.savefig(
+    os.path.join("results", "culture_method_comparison.suspension&alone.factorplot.svg"),
+    dpi=300, bbox_inches="tight")

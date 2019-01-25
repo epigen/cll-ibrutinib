@@ -1,14 +1,11 @@
 
 import os
 import pandas as pd
-import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 import seaborn as sns
-from ngs_toolkit.general import signed_max
 from scipy.stats import gaussian_kde
-from scipy.stats import zscore
-import matplotlib.pyplot as plt
+import scipy
 
 
 # Set settings

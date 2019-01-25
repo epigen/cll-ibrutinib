@@ -5,8 +5,8 @@ import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
 import seaborn as sns
-
-from looper.models import Project
+import scipy
+from scipy.interpolate import griddata
 
 
 # Set settings
@@ -18,15 +18,13 @@ matplotlib.rcParams['xtick.direction'] = 'out'
 matplotlib.rcParams['ytick.direction'] = 'out'
 matplotlib.rc('text', usetex=False)
 
-import sys
-sys.setrecursionlimit(10000)
 
 c = {
     "drug_alone": 0,
     "drug_plus_10nM_Ibrut": 10,
     "drug_plus_100nM_Ibrut": 100,
     "drug_plus_500nM_Ibrut": 500,
-    "drug_plus_1µM_Ibrut": 1000,}
+    "drug_plus_1µM_Ibrut": 1000}
 
 df = pd.read_csv(os.path.join("metadata", "drug_combinations.csv"))
 df = df.sort_values(['patient_id', "drug_name", "exposure_time", "drug_concentration"])
@@ -73,9 +71,10 @@ for patient in patients:
                 (df["patient_id"] == patient) &
                 (df["drug_name"] == drug_name) &
                 (df["ibrutinib_concentration"] == ibrutinib_concentration), :]
-            ax.plot(df2['drug_concentration'], df2["viability"],
-            label="drug + {}nM Ibrutinib".format(ibrutinib_concentration),
-            linestyle="-", marker="o", zorder=i)
+            ax.plot(
+                df2['drug_concentration'], df2["viability"],
+                label="drug + {}nM Ibrutinib".format(ibrutinib_concentration),
+                linestyle="-", marker="o", zorder=i)
 
         if df2['drug_concentration'].max() >= 100:
             ax.set_xscale("symlog", basex=10, linthreshx=5)
@@ -86,7 +85,8 @@ for patient in patients:
             (df["drug_name"] == drug_name) &
             (df["drug_concentration"] == 0), :]
         df3 = df3[df3['ibrutinib_concentration'] <= df2['drug_concentration'].max()]
-        ax.plot(df3['ibrutinib_concentration'], df3["viability"], label="Ibrutinib alone",
+        ax.plot(
+            df3['ibrutinib_concentration'], df3["viability"], label="Ibrutinib alone",
             linestyle="--", marker="o", color="black", alpha=0.75, zorder=0)
 
         ax.set_xlabel("Concentration (nM)")
@@ -123,12 +123,14 @@ for i, drug_name in enumerate(drugs):
             (df2["ibrutinib_concentration"] == ibrutinib_concentration), :]
 
         # mean
-        ax.plot(df3['drug_concentration'], df3["viability"],
+        ax.plot(
+            df3['drug_concentration'], df3["viability"],
             label="drug + {}nM Ibrutinib".format(ibrutinib_concentration),
             linestyle="-", marker="o", zorder=i)
         # stderror bars
         for _, row in df3.iterrows():
-            ax.plot((row['drug_concentration'], row['drug_concentration']), (row["lower_sem"], row["upper_sem"]),
+            ax.plot(
+                (row['drug_concentration'], row['drug_concentration']), (row["lower_sem"], row["upper_sem"]),
                 linewidth=1, color="black")
 
     # Ibrutinib alone
@@ -136,11 +138,13 @@ for i, drug_name in enumerate(drugs):
         (df2["drug_name"] == drug_name) &
         (df2["drug_concentration"] == 0), :]
     df4 = df4[df4['ibrutinib_concentration'] <= df3['drug_concentration'].max()]
-    ax.plot(df4['ibrutinib_concentration'], df4["viability"], label="Ibrutinib alone",
+    ax.plot(
+        df4['ibrutinib_concentration'], df4["viability"], label="Ibrutinib alone",
         linestyle="--", marker="o", color="black", alpha=0.75, zorder=0)
     # stderror bars
     for _, row in df4.iterrows():
-        ax.plot((row['drug_concentration'], row['drug_concentration']), (row["lower_sem"], row["upper_sem"]),
+        ax.plot(
+            (row['drug_concentration'], row['drug_concentration']), (row["lower_sem"], row["upper_sem"]),
             linewidth=1, color="black")
 
     if df3['drug_concentration'].max() >= 100:
@@ -171,13 +175,15 @@ df2['lower_sem'] = df2['viability'] - df2['viability_sem'] / 2.
 fig, axis = plt.subplots(n, n, figsize=(n * 3.5, n * 3.5), sharex=False, sharey=False)
 fig.text(0.5, 1.02, "Patient means", fontsize=14, ha="center")
 # mean
-axis.plot(df2['ibrutinib_concentration'], df2["viability"],
+axis.plot(
+    df2['ibrutinib_concentration'], df2["viability"],
     label="drug + {}nM Ibrutinib".format(ibrutinib_concentration),
     linestyle="-", marker="o", zorder=-1)
 # stderror bars
 for _, row in df2.iterrows():
-    axis.plot((row['ibrutinib_concentration'], row['ibrutinib_concentration']), (row["lower_sem"], row["upper_sem"]),
-            linewidth=1, color="black")
+    axis.plot(
+        (row['ibrutinib_concentration'], row['ibrutinib_concentration']), (row["lower_sem"], row["upper_sem"]),
+        linewidth=1, color="black")
 if df2['ibrutinib_concentration'].max() >= 100:
     axis.set_xscale("symlog", basex=10, linthreshx=5)
 axis.set_xlabel("Concentration (nM)")
@@ -207,7 +213,8 @@ for patient in patients:
             (df["patient_id"] == patient) &
             (df["drug_name"] == drug_name), :],
             index="ibrutinib_concentration", columns="drug_concentration", values="phenotype")
-        sns.heatmap(data=df2, ax=ax, cmap="RdBu_r", cbar_kws={"label": "% killing"},
+        sns.heatmap(
+            data=df2, ax=ax, cmap="RdBu_r", cbar_kws={"label": "% killing"},
             vmin=-100, vmax=100,
             label="drug + {}nM Ibrutinib".format(ibrutinib_concentration))
         ax.set_title(drug_name)
@@ -226,7 +233,8 @@ for i, drug_name in enumerate(drugs):
     df2 = pd.pivot_table(data=df.loc[
         (df["drug_name"] == drug_name), :],
         index="ibrutinib_concentration", columns="drug_concentration", values="phenotype")
-    sns.heatmap(data=df2, ax=ax, cmap="RdBu_r", cbar_kws={"label": "% killing"},
+    sns.heatmap(
+        data=df2, ax=ax, cmap="RdBu_r", cbar_kws={"label": "% killing"},
         vmin=-100, vmax=100,
         label="drug + {}nM Ibrutinib".format(ibrutinib_concentration))
     ax.set_title(drug_name)
@@ -241,16 +249,16 @@ auc = (
         df
         .groupby(['patient_id', "drug_name", "exposure_time", "ibrutinib_concentration"])
         .apply(
-            lambda x: 
+            lambda x:
                 np.trapz(x["viability"], x=x["drug_concentration"]))).to_frame(name="auc").reset_index()
 auc.to_csv(os.path.join("results", "drug_synergies.AUCs.csv"), encoding="utf-8", index=False)
 
 # Calculate AUC fold-change
-f =  (
+f = (
         auc
         .groupby(['patient_id', "drug_name", "exposure_time"])
         .apply(
-            lambda x: 
+            lambda x:
                 np.log2(x['auc'] / x.loc[x['ibrutinib_concentration'] == 0, 'auc'].squeeze()).squeeze()
         )
     ).to_frame(name="auc_fold_change").reset_index().set_index('level_3')[['auc_fold_change']]
@@ -264,15 +272,17 @@ for i, patient in enumerate(patients):
     ax = axis[i]
     df2 = auc[auc["patient_id"] == patient]
     p = pd.pivot_table(df2, index="drug_name", columns="ibrutinib_concentration", values="auc_fold_change")
-    sns.heatmap(p, ax=ax, cmap="RdBu_r", vmin=-0.5, vmax=0.5,
+    sns.heatmap(
+        p, ax=ax, cmap="RdBu_r", vmin=-0.5, vmax=0.5,
         cbar_kws={"label": "log2 fold-change of AUC\nover Control (Ibrutinib alone)"},
         xticklabels=(p.columns.astype(str) + "uM").tolist())
     ax.set_title(patient)
 df2 = auc.groupby(['drug_name', 'exposure_time', 'ibrutinib_concentration'])['auc_fold_change'].mean().reset_index()
 p = pd.pivot_table(df2, index="drug_name", columns="ibrutinib_concentration", values="auc_fold_change")
-sns.heatmap(p, ax=axis[3], cmap="RdBu_r", vmin=-0.5, vmax=0.5,
-        cbar_kws={"label": "log2 fold-change of AUC\nover Control (Ibrutinib alone)"},
-        xticklabels=(p.columns.astype(str) + "uM").tolist())
+sns.heatmap(
+    p, ax=axis[3], cmap="RdBu_r", vmin=-0.5, vmax=0.5,
+    cbar_kws={"label": "log2 fold-change of AUC\nover Control (Ibrutinib alone)"},
+    xticklabels=(p.columns.astype(str) + "uM").tolist())
 axis[3].set_title("Mean")
 for ax in axis:
     ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right")
@@ -284,7 +294,8 @@ fig.savefig(os.path.join("results", "drug_synergies.AUC_fold_change.heatmap.svg"
 df2 = auc[auc["ibrutinib_concentration"] == 500]
 p = pd.pivot_table(df2, index="drug_name", columns="patient_id", values="auc_fold_change")
 p = p.join(df2.groupby(['drug_name'])['auc_fold_change'].mean().to_frame(name="mean"))
-g = sns.clustermap(p.T, cmap="RdBu_r", row_cluster=False, col_cluster=True,
+g = sns.clustermap(
+    p.T, cmap="RdBu_r", row_cluster=False, col_cluster=True,
     cbar_kws={"label": "log2 fold-change of AUC\nover Control (Ibrutinib alone)"},
     vmin=-0.5, vmax=0.5, figsize=(8, 4), square=True)
 g.ax_heatmap.set_xticklabels(g.ax_heatmap.get_xticklabels(), rotation=45, ha="right")
@@ -292,7 +303,7 @@ g.ax_heatmap.set_yticklabels(g.ax_heatmap.get_yticklabels(), rotation=0, ha="lef
 g.savefig(os.path.join("results", "drug_synergies.AUC_fold_change.500uM_ibrutinib.clustermap.svg"), dpi=300, bbox_inches="tight")
 
 
-
+"""
 
 library("reshape")
 library("synergyfinder")
@@ -305,7 +316,7 @@ for (patient in unique(df$patient_id)){
     for (drug in unique(df$drug_name)){
         print(c(patient, drug))
         df2 = df[
-            (df$patient_id == patient) & 
+            (df$patient_id == patient) &
             (df$drug_name == drug),
         ]
         # pivot
@@ -358,9 +369,8 @@ for (patient in unique(df$patient_id)){
     }
 }
 write.csv(all_scores, "drug_combinations.synergy_scores.csv", sep=",", row.names=FALSE)
+"""
 
-
-from scipy.interpolate import griddata
 scores = pd.read_csv(os.path.join("results", "drug_combinations.synergy_scores.csv"))
 
 for score in scores['test'].drop_duplicates():
